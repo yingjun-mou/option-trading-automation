@@ -6,5 +6,7 @@ pyarrow>=14
 tabulate>=0.9
 # stock data source (swappable - see src/datasource.py)
 yfinance>=0.2.40
+# real-time dashboard
+flask>=3.0
 # only used by scripts/ml_probe.py (optional phase 2)
 scikit-learn>=1.3

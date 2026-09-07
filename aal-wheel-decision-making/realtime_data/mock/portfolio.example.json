@@ -1,0 +1,17 @@
+{
+  "cash": 100000.0,
+  "shares": 0,
+  "avg_share_cost": 0.0,
+  "csp_premium_since_flat": 0.0,
+  "waiting_for_dip": false,
+  "positions": [
+    {
+      "opt_type": "P",
+      "expiration": "2026-10-16",
+      "strike": 12.0,
+      "contracts": 4,
+      "entry_price": 0.42,
+      "entry_date": "2026-09-19"
+    }
+  ]
+}

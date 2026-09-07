@@ -1,4 +1,4 @@
-# data/
+# historical_data/
 
 | path | what | source |
 | --- | --- | --- |
@@ -10,8 +10,8 @@
 
 `default_sources()` in `src/datasource.py`:
 
-1. If `data/orats/` contains any `.csv` / `.parquet` -> use it.
-2. Otherwise generate `data/mock/ORATS_strikes_AAL_synthetic.csv` (once) and use that.
+1. If `historical_data/orats/` contains any `.csv` / `.parquet` -> use it.
+2. Otherwise generate `historical_data/mock/ORATS_strikes_AAL_synthetic.csv` (once) and use that.
 
 Both folders are read by the **same** function, `read_orats_strikes()`, so the mock
 and the real data are interchangeable with no code change.
@@ -27,5 +27,5 @@ Columns used by the backtest: `tradeDate`, `expirDate`, `dte`, `strike`,
 `gamma`, `theta`, `vega`. Every other ORATS column is accepted and ignored.
 
 The mock generator writes the full 45-column ORATS layout so a real export drops
-straight in. `data/mock/_normalized.parquet` and `data/orats/_normalized.parquet`
+straight in. `historical_data/mock/_normalized.parquet` and `historical_data/orats/_normalized.parquet`
 are read-through caches (git-ignored, rebuilt when the source files change).

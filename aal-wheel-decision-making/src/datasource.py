@@ -9,7 +9,7 @@ import pandas as pd
 
 from .pricing import bs_delta, bs_greeks, bs_price
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+DATA_DIR = Path(__file__).resolve().parent.parent / "historical_data"
 MOCK_DIR = DATA_DIR / "mock"
 ORATS_DIR = DATA_DIR / "orats"
 STOCK_CSV = DATA_DIR / "stock_aal.csv"
