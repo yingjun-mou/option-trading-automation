@@ -19,6 +19,13 @@ OPTIMIZED_CONFIG = ROOT / "results" / "optimized_config.json"
 PORTFOLIO_FILE = MOCK_DIR / "portfolio.json"
 
 app = Flask(__name__)
+app.config["TEMPLATES_AUTO_RELOAD"] = True
+
+
+@app.after_request
+def _no_cache(resp):
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 def _load_config() -> WheelConfig:
@@ -66,4 +73,5 @@ def api_history():
 
 
 if __name__ == "__main__":
+    print("dashboard: open http://127.0.0.1:5000 in a browser")
     app.run(host="127.0.0.1", port=5000, debug=False)

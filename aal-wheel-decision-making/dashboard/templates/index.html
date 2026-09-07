@@ -58,14 +58,14 @@
 <div class="wrap">
   <section class="panel">
     <div><span class="price" id="price">--</span><span class="chg" id="chg"></span></div>
-    <div class="asof" id="asof"></div>
+    <div class="asof" id="asof">connecting to advisor ...</div>
     <svg id="spark" viewBox="0 0 600 90" preserveAspectRatio="none"></svg>
     <div class="sig-grid" id="signals"></div>
   </section>
 
   <section class="panel">
     <h2>Recommendation</h2>
-    <div id="recs"></div>
+    <div id="recs"><p style="color:var(--muted)">loading ...</p></div>
     <h2 style="margin-top:18px">Open positions</h2>
     <div id="positions"><p style="color:var(--muted)">none</p></div>
   </section>
@@ -91,8 +91,11 @@ const SIGNAL_ROWS = [
 ];
 
 async function drawSpark() {
-  const h = await (await fetch("/api/history")).json();
-  const v = h.close, n = v.length;
+  let h;
+  try { h = await (await fetch("/api/history", { cache: "no-store" })).json(); }
+  catch (e) { return; }
+  const v = h.close || [], n = v.length;
+  if (!n) return;
   const lo = Math.min(...v), hi = Math.max(...v), pad = (hi - lo) * 0.1 || 1;
   const x = i => (i / (n - 1)) * 600;
   const y = p => 88 - ((p - lo + pad) / (hi - lo + 2 * pad)) * 84;
@@ -118,8 +121,25 @@ function paramTable(p) {
   ).join("")}</table>`;
 }
 
+function showError(msg) {
+  document.getElementById("recs").innerHTML =
+    `<div class="rec warn"><span class="tag">OFFLINE</span>
+     <h3>Cannot reach the advisor</h3><p>${msg}</p>
+     <p style="margin-top:8px">Start it with <code>python dashboard/app.py</code> from the
+     project root, wait for <code>ready</code>, then open
+     <code>http://127.0.0.1:5000</code> (do not open the .html file directly).</p></div>`;
+}
+
 async function refresh() {
-  const a = await (await fetch("/api/advice")).json();
+  let a;
+  try {
+    const resp = await fetch("/api/advice", { cache: "no-store" });
+    if (!resp.ok) { showError("API returned HTTP " + resp.status + " (server still starting?)."); return; }
+    a = await resp.json();
+  } catch (e) {
+    showError("Fetch failed: " + e.message);
+    return;
+  }
   document.getElementById("src").textContent =
     a.data_source === "mock" ? "MOCK DATA" : a.data_source.toUpperCase();
   document.getElementById("price").textContent = "$" + F(a.spot);
@@ -139,7 +159,7 @@ async function refresh() {
       ${paramTable(r.params || {})}
     </div>`).join("");
 
-  const pos = a.position_reviews;
+  const pos = a.position_reviews || [];
   document.getElementById("positions").innerHTML = pos.length ? pos.map(p => `
     <div class="pos">
       <b>${p.kind} ${p.strike}${p.opt_type} exp ${p.expiration}</b> &times;${p.contracts}
