@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AAL Wheel Advisor</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262b36; --text: #e6e8ec;
+    --muted: #9aa4b2; --up: #3fb950; --down: #f85149; --accent: #58a6ff;
+    --warn: #d29922;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 14px; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .mock { color: var(--warn); font-size: 12px; border: 1px solid var(--warn);
+    padding: 1px 6px; border-radius: 4px; }
+  header .cfg { color: var(--muted); font-size: 12px; margin-left: auto; }
+  .wrap { display: grid; grid-template-columns: 1.1fr 1fr; gap: 16px; padding: 16px 20px; }
+  @media (max-width: 880px) { .wrap { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .price { font-size: 44px; font-weight: 700; letter-spacing: -1px; }
+  .chg { font-size: 15px; margin-left: 8px; }
+  .up { color: var(--up); } .down { color: var(--down); }
+  .asof { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  svg { width: 100%; height: 90px; margin-top: 10px; }
+  .sig-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 18px; margin-top: 14px; }
+  .sig-grid div { display: flex; justify-content: space-between; border-bottom: 1px dotted var(--line); padding: 3px 0; }
+  .sig-grid span:first-child { color: var(--muted); }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+    margin: 0 0 10px; }
+  .rec { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
+  .rec.primary { border-color: var(--accent); background: rgba(88,166,255,.07); }
+  .rec .tag { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .05em;
+    padding: 2px 7px; border-radius: 4px; background: var(--line); }
+  .rec.primary .tag { background: var(--accent); color: #0b0d10; }
+  .rec.roll .tag, .rec.warn .tag { background: var(--warn); color: #0b0d10; }
+  .rec h3 { font-size: 14px; margin: 8px 0 4px; }
+  .rec p { margin: 0; color: var(--muted); }
+  table.params { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+  table.params td { padding: 3px 0; border-bottom: 1px dotted var(--line); }
+  table.params td:last-child { text-align: right; }
+  .pos { font-size: 13px; border-bottom: 1px solid var(--line); padding: 8px 0; }
+  .pos .r { color: var(--muted); }
+  footer { color: var(--muted); font-size: 12px; padding: 4px 20px 20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AAL Wheel Advisor</h1>
+  <span class="mock" id="src">MOCK DATA</span>
+  <span class="cfg">rules: {{ config_label }} &middot; refresh 6s</span>
+</header>
+
+<div class="wrap">
+  <section class="panel">
+    <div><span class="price" id="price">--</span><span class="chg" id="chg"></span></div>
+    <div class="asof" id="asof">connecting to advisor ...</div>
+    <svg id="spark" viewBox="0 0 600 90" preserveAspectRatio="none"></svg>
+    <div class="sig-grid" id="signals"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Recommendation</h2>
+    <div id="recs"><p style="color:var(--muted)">loading ...</p></div>
+    <h2 style="margin-top:18px">Open positions</h2>
+    <div id="positions"><p style="color:var(--muted)">none</p></div>
+  </section>
+</div>
+
+<footer>Suggestions only &mdash; execute manually. Not investment advice.</footer>
+
+<script>
+const F = (x, d = 2) => (x === null || x === undefined || Number.isNaN(x)) ? "-" : Number(x).toFixed(d);
+const PCT = x => (x === null || x === undefined || Number.isNaN(x)) ? "-" : (100 * x).toFixed(0) + "%";
+
+const SIGNAL_ROWS = [
+  ["3Y price %ile", d => PCT(d.pct_3y)],
+  ["1Y price %ile", d => PCT(d.pct_1y)],
+  ["dist. from 3Y low", d => PCT(d.dist_from_low_3y)],
+  ["dist. from 3Y high", d => PCT(d.dist_from_high_3y)],
+  ["20d return", d => PCT(d.ret_20)],
+  ["RSI(14)", d => F(d.rsi_14, 0)],
+  ["realised vol 20d", d => PCT(d.rv_20)],
+  ["ATM IV (30d)", d => PCT(d.iv_30)],
+  ["IV %ile (1Y)", d => PCT(d.iv_pct_1y)],
+  ["IV - RV", d => PCT(d.iv_minus_rv20)],
+];
+
+async function drawSpark() {
+  let h;
+  try { h = await (await fetch("/api/history", { cache: "no-store" })).json(); }
+  catch (e) { return; }
+  const v = h.close || [], n = v.length;
+  if (!n) return;
+  const lo = Math.min(...v), hi = Math.max(...v), pad = (hi - lo) * 0.1 || 1;
+  const x = i => (i / (n - 1)) * 600;
+  const y = p => 88 - ((p - lo + pad) / (hi - lo + 2 * pad)) * 84;
+  const d = v.map((p, i) => (i ? "L" : "M") + x(i).toFixed(1) + " " + y(p).toFixed(1)).join(" ");
+  document.getElementById("spark").innerHTML =
+    `<path d="${d}" fill="none" stroke="#58a6ff" stroke-width="1.5"/>`;
+}
+
+function recClass(action) {
+  if (action.startsWith("ROLL")) return "rec roll";
+  if (action.startsWith("CONSIDER")) return "rec warn";
+  return "rec";
+}
+
+const fmtNum = x => Number.isInteger(x) ? String(x)
+  : (Math.abs(x) < 1 ? x.toFixed(3) : x.toFixed(2));
+
+function paramTable(p) {
+  const keys = Object.keys(p).filter(k => !["kind", "opt_type"].includes(k));
+  if (!keys.length) return "";
+  return `<table class="params">${keys.map(k =>
+    `<tr><td>${k.replace(/_/g, " ")}</td><td>${typeof p[k] === "number" ? fmtNum(p[k]) : p[k]}</td></tr>`
+  ).join("")}</table>`;
+}
+
+function showError(msg) {
+  document.getElementById("recs").innerHTML =
+    `<div class="rec warn"><span class="tag">OFFLINE</span>
+     <h3>Cannot reach the advisor</h3><p>${msg}</p>
+     <p style="margin-top:8px">Start it with <code>python dashboard/app.py</code> from the
+     project root, wait for <code>ready</code>, then open
+     <code>http://127.0.0.1:5000</code> (do not open the .html file directly).</p></div>`;
+}
+
+async function refresh() {
+  let a;
+  try {
+    const resp = await fetch("/api/advice", { cache: "no-store" });
+    if (!resp.ok) { showError("API returned HTTP " + resp.status + " (server still starting?)."); return; }
+    a = await resp.json();
+  } catch (e) {
+    showError("Fetch failed: " + e.message);
+    return;
+  }
+  document.getElementById("src").textContent =
+    a.data_source === "mock" ? "MOCK DATA" : a.data_source.toUpperCase();
+  document.getElementById("price").textContent = "$" + F(a.spot);
+  const chg = document.getElementById("chg");
+  chg.textContent = (a.change_pct >= 0 ? "+" : "") + F(a.change_pct) + "%";
+  chg.className = "chg " + (a.change_pct >= 0 ? "up" : "down");
+  document.getElementById("asof").textContent = "as of " + a.as_of + "  (prev close $" + F(a.prev_close) + ")";
+
+  document.getElementById("signals").innerHTML = SIGNAL_ROWS.map(
+    ([label, fn]) => `<div><span>${label}</span><span>${fn(a.signals)}</span></div>`).join("");
+
+  document.getElementById("recs").innerHTML = a.recommendations.map((r, i) => `
+    <div class="${recClass(r.action)}${i === 0 ? " primary" : ""}">
+      <span class="tag">${r.action.replace(/_/g, " ")}</span>
+      <h3>${r.headline}</h3>
+      <p>${r.rationale}</p>
+      ${paramTable(r.params || {})}
+    </div>`).join("");
+
+  const pos = a.position_reviews || [];
+  document.getElementById("positions").innerHTML = pos.length ? pos.map(p => `
+    <div class="pos">
+      <b>${p.kind} ${p.strike}${p.opt_type} exp ${p.expiration}</b> &times;${p.contracts}
+      <span class="r">&nbsp; ${p.dte} DTE &middot; ${p.itm ? "ITM" : "OTM"} &middot;
+      mark $${F(p.mark)} &middot; P&amp;L $${F(p.open_pnl, 0)} (${PCT(p.pct_max_profit)} of max)</span>
+    </div>`).join("") : `<p style="color:var(--muted)">none</p>`;
+}
+
+drawSpark();
+refresh();
+setInterval(refresh, 6000);
+setInterval(drawSpark, 60000);
+</script>
+</body>
+</html>

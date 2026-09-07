@@ -1,12 +1,15 @@
 # aal-wheel-decision-making
 
-Research code that searches AAL's price and options history for the most
-profitable **price-based** options-selling strategy -- cash-secured puts, covered
-calls, or the two combined as a Wheel -- and checks whether the result survives
-out of sample.
+Two parts:
 
-It is a decision-making study, not a trading bot. Nothing here connects to a
-broker or runs live. You run it once and read the report.
+1. **Research** -- search AAL's price and options history for the most profitable
+   **price-based** options-selling strategy (cash-secured puts, covered calls, or
+   the two combined as a Wheel) and check whether it survives out of sample.
+2. **Advisor dashboard** -- feed the same rules a live (currently mock) AAL quote
+   and your current holdings, and get one recommendation: sell a CSP/CC (with the
+   exact strike, expiry, size), wait, buy-to-close, or roll.
+
+Nothing here trades. It tells you what to do; you execute manually.
 
 ## The idea
 
@@ -27,30 +30,41 @@ Python 3.11+ (developed on 3.14).
 ## Run
 
 ```
-python scripts/run_all.py            # full grid + walk-forward + report (~8 min)
-python scripts/run_all.py --quick    # small grid, fast sanity pass
-python scripts/ml_probe.py           # optional: does a simple model beat the price rule?
+python scripts/run_all.py            # research: full grid + walk-forward + report (~8 min)
+python scripts/run_all.py --quick    # research: small grid, fast sanity pass
+python scripts/ml_probe.py           # research: does a simple model beat the price rule?
+
+python scripts/advise.py             # advisor: print one recommendation to the terminal
+python dashboard/app.py              # advisor: live dashboard at http://127.0.0.1:5000
 ```
 
-Everything lands in `results/`: `RESEARCH_REPORT.md` (the readable answer),
-grid CSVs, walk-forward and regime tables, per-trade log, equity plots.
+Research output lands in `results/`: `RESEARCH_REPORT.md` (the readable answer),
+grid CSVs, walk-forward and regime tables, per-trade log, equity plots. The
+dashboard reads `results/optimized_config.json` for its rules (falls back to
+defaults if you have not run the research yet).
 
 ## Data
 
-Stock prices are real (Yahoo Finance, cached in `data/stock_aal.csv`).
+Two independent data layers, each with a mock backend now and a real one later.
 
-Option prices come from the **ORATS EOD "strikes" schema**. Two folders, one
-reader:
+### `historical_data/` -- for the research backtest
 
-- `data/mock/` -- a synthetic chain written on first run in the exact ORATS
-  layout (Black-Scholes on the real AAL close plus a modelled IV surface). Used
-  only while `data/orats/` is empty.
-- `data/orats/` -- drop real ORATS EOD files here (`.csv` or `.parquet`, one big
-  file or one per day). As soon as anything is present it takes over and the
-  report header changes from `MockOptions` to `OratsFolder`.
+- `historical_data/stock_aal.csv` -- real AAL OHLCV (Yahoo Finance, auto-cached).
+- `historical_data/mock/` -- synthetic option chain written on first run in the
+  exact **ORATS EOD "strikes" schema** (Black-Scholes on the real close + a
+  modelled IV surface). Used while `historical_data/orats/` is empty.
+- `historical_data/orats/` -- drop real ORATS EOD files here (`.csv`/`.parquet`).
+  Picked up automatically; `read_orats_strikes()` parses both, so it is zero-code.
 
-Both go through `read_orats_strikes()`, so switching is zero-code. See
-`data/README.md` for the column list.
+### `realtime_data/` -- for the advisor dashboard
+
+- `realtime_data/mock/` -- fake feed from the last cached close (price wanders so
+  the dashboard ticks) + an on-the-fly Black-Scholes chain. Also holds
+  `mock/portfolio.json` (your current holdings; copy from `portfolio.example.json`).
+- `realtime_data/robinhood_api/` -- TODO: real AAL quote + chain via Robinhood.
+
+`src/realtime.py` defines the `RealtimeSource` interface (`quote()` +
+`option_chain()`); `default_realtime_source()` picks the backend.
 
 ## Strategy legs
 
@@ -79,7 +93,10 @@ or dataclass to the next.
 
 | module | responsibility |
 | --- | --- |
-| `datasource.py` | The only place that knows where data comes from. `StockSource` / `OptionSource` interfaces; `YahooStock`, `CsvStock`, `OratsFolder`, `MockOptions` implement them. `load_market_data(stock_source, option_source)` returns a `MarketData`. New provider = one new class. |
+| `datasource.py` | Historical data boundary. `StockSource` / `OptionSource` interfaces; `YahooStock`, `CsvStock`, `OratsFolder`, `MockOptions` implement them. `load_market_data(...)` returns a `MarketData`. |
+| `realtime.py` | Live data boundary. `RealtimeSource` interface; `MockRealtime` today, `RobinhoodRealtime` later. Returns a `Quote` and a normalised option-chain DataFrame. |
+| `advisor.py` | Turns the rules + a live quote + your `PortfolioState` into an `Advice`: `compute_live_features()` (the same feature definitions, one latest row) then `advise()`, which dry-runs the legs and reviews open positions to produce ranked `Recommendation`s (ROLL / CLOSE / SELL_CSP / SELL_CC / WAIT). Rolling parameter selection is a TODO. |
+| `dashboard/app.py` + `templates/index.html` | Flask: `/` renders the page, `/api/advice` returns the JSON the page polls every 6s. Left pane = price + sparkline + signals; right pane = recommendation cards + open positions. |
 | `pricing.py` | Black-Scholes price, greeks, implied-vol solve. |
 | `features.py` | Daily features from `MarketData`: rolling 3Y/1Y price percentile (main signal), realised vol, IV percentile, momentum. |
 | `csp/`, `cc/` | The two legs. `leg.py` in each holds the ladder function and the `rebalance()` that decides what to sell that day. |
@@ -96,7 +113,10 @@ or dataclass to the next.
 
 ## Swapping pieces
 
-- **New data source**: implement `fetch()` on a class in `datasource.py`.
+- **New historical source**: implement `fetch()` on a class in `datasource.py`.
+- **Real-time feed (Robinhood)**: implement `quote()` + `option_chain()` in
+  `src/realtime.py` and return it from `default_realtime_source()`. The advisor
+  and dashboard only see the interface.
 - **Smarter search**: implement `Searcher` in `search.py`, feed it the same
   `Objective`.
 - **New strategy leg**: add a package under `src/` with a `rebalance(account,

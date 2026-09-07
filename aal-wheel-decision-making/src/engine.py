@@ -157,7 +157,9 @@ class WheelAccount:
                                        date, q["mid"], net, spot, q["delta"], q["iv"], profit_take))
         self._log(date=date, action="SELL_PUT" if q["opt_type"] == "P" else "SELL_CALL",
                   opt_type=q["opt_type"], strike=q["strike"], contracts=contracts,
-                  underlying=spot, cash_flow=net,
+                  underlying=spot, cash_flow=net, expiration=q["expiration"],
+                  dte=int(q["dte"]), delta=round(q["delta"], 3), entry_mid=q["mid"],
+                  iv=round(q["iv"], 4), signal=round(signal, 3),
                   note=f"dte{int(q['dte'])} d{q['delta']:.2f} sig{signal:.2f}")
 
     def close(self, pos, q, date, spot):

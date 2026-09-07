@@ -1,8 +1,14 @@
-data/**/*.csv
-data/**/*.parquet
-data/*.csv
-data/*.parquet
-!data/**/README.md
+historical_data/**/*.csv
+historical_data/**/*.parquet
+historical_data/*.csv
+historical_data/*.parquet
+
+realtime_data/**/*.csv
+realtime_data/**/*.parquet
+realtime_data/mock/portfolio.json
+
+!**/README.md
+!realtime_data/mock/portfolio.example.json
 
 results/*
 !results/.gitkeep
