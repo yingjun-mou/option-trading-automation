@@ -43,7 +43,7 @@ RESULT_COLUMNS = [
     "cc_reward_pct", "cc_reward_pct_annualized",
     "csp_reward_pct", "csp_reward_pct_annualized",
     "cc_live", "csp_live",
-    "iv_rank_pct",
+    "iv_rank_pct", "price_pct",
     "error",
 ]
 
@@ -184,7 +184,9 @@ def _scan_one(symbol: str, dte_range: tuple[int, int] = DTE_RANGE) -> dict:
                 cc_reward_pct=cc_reward_pct, cc_reward_pct_annualized=cc_reward_pct_ann,
                 csp_reward_pct=csp_reward_pct, csp_reward_pct_annualized=csp_reward_pct_ann,
                 cc_live=cc_live, csp_live=csp_live,
-                iv_rank_pct=None,  # filled in by ScannerJob from the (separately cached) IV-rank job
+                # both filled in by ScannerJob from the (separately cached) IvRankJob signals:
+                iv_rank_pct=None,
+                price_pct=None,  # live spot (above) ranked against recent daily closes
                 error=None,
             )
         except Exception as e:  # noqa: BLE001 -- one bad ticker must not sink the scan

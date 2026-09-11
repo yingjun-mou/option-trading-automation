@@ -54,7 +54,7 @@ CONFIG = _load_config()
 SOURCE = default_realtime_source()
 IV_RANK = IvRankJob()
 IV_RANK.start()
-SCANNER = ScannerJob(iv_rank_provider=lambda: IV_RANK.ranks)
+SCANNER = ScannerJob(iv_rank_provider=lambda: IV_RANK.signals)
 SCANNER.start()
 print(f"dashboard: config={CONFIG.label}  feed={type(SOURCE).__name__}  ready")
 
