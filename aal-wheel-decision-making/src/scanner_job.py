@@ -28,14 +28,35 @@ class ScannerState:
     rows: list[dict] = field(default_factory=list)
 
 
+def _json_safe(obj):
+    """Recursively replace float NaN with None -- pandas leaves genuinely
+    missing numeric fields (e.g. cc_premium with no live/recent quote) as
+    NaN, and `json.dumps` emits that as the bare token NaN, which is not
+    valid JSON and JS's JSON.parse rejects outright."""
+    if isinstance(obj, float) and pd.isna(obj):
+        return None
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_safe(v) for v in obj]
+    return obj
+
+
 class ScannerJob:
     """Owns the background scan loop: runs on startup, then every
     REFRESH_SECONDS, writing results to CACHE_FILE. `trigger_refresh()` wakes
-    it immediately (used by the dashboard's manual refresh button)."""
+    it immediately (used by the dashboard's manual refresh button).
 
-    def __init__(self, cache_file: Path = CACHE_FILE, interval: int = REFRESH_SECONDS):
+    `iv_rank_provider`, if given, is called once per scan to get the current
+    {symbol: rv_rank_proxy} map (see iv_rank_job.IvRankJob) and merge it into
+    each row -- kept as an injected callable so this module doesn't need to
+    know that job's refresh cadence or cache format."""
+
+    def __init__(self, cache_file: Path = CACHE_FILE, interval: int = REFRESH_SECONDS,
+                iv_rank_provider=None):
         self.cache_file = cache_file
         self.interval = interval
+        self.iv_rank_provider = iv_rank_provider
         self.state = ScannerState()
         self._wake = threading.Event()
         self._lock = threading.Lock()
@@ -73,7 +94,12 @@ class ScannerJob:
             self.state.progress = (0, len(symbols))
             df = scan_universe(symbols, on_progress=lambda i, n: setattr(self.state, "progress", (i, n)))
             ok = df[df["error"].isna()].drop(columns=["error"])
-            self.state.rows = ok.to_dict(orient="records")
+            if self.iv_rank_provider is not None:
+                ranks = self.iv_rank_provider()
+                if ranks:
+                    ok = ok.copy()
+                    ok["iv_rank_pct"] = ok["symbol"].map(ranks)
+            self.state.rows = _json_safe(ok.to_dict(orient="records"))
             self.state.scanned = len(ok)
             self.state.failed = int(df["error"].notna().sum())
             self.state.as_of = pd.Timestamp.now("UTC").isoformat(timespec="seconds")

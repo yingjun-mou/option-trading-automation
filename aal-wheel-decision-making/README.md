@@ -79,13 +79,40 @@ AAL wheel rules:
   changes slowly, so it is a manual/occasional rebuild, not part of the live loop.
 - **Per ticker**: nearest expiry in the 25-45 DTE window, the strike closest to
   spot (ATM), and:
-  - `cc_reward_pct` = call bid / spot -- covered-call premium as a fraction of
-    the stock's market value (the 100-share contract multiplier cancels).
-  - `csp_reward_pct` = put bid / strike -- cash-secured-put premium as a
+  - `cc_reward_pct` = call premium / spot -- covered-call premium as a fraction
+    of the stock's market value (the 100-share contract multiplier cancels).
+  - `csp_reward_pct` = put premium / strike -- cash-secured-put premium as a
     fraction of the cash collateral required.
   - `*_annualized` versions divide by dte/365.
-  - `cc_thin` / `csp_thin` flags a leg with no open interest or volume today
-    (quote may be stale/wide -- shown as &#9888; in the UI, not dropped).
+  - **premium = the live bid, nothing else** (`cc_live`/`csp_live` says which).
+    With no live bid (routinely true outside market hours -- confirmed AAPL/TSLA
+    show bid=ask=0 overnight), falls back to the last trade price, but *only* if
+    that trade happened within `MAX_CLOSE_STALENESS_DAYS`. Ground truth for why
+    this matters: INIO's `lastPrice` was $7.00 from a real trade 9 days earlier
+    at a very different spot, bid/ask both 0 -- reporting that as "today's
+    premium" is simply wrong, not optimistic, so a stale lastPrice yields no
+    number at all rather than a guess.
+  - `call_oi`/`call_volume`/`put_oi`/`put_volume` are the raw open-interest and
+    same-day volume, exposed for the dashboard's liquidity filters.
+  - `iv_rank_pct` is filled in from `src/iv_rank.py` (see below) -- a **proxy**,
+    not true IV Rank.
+- **Dashboard filters** (client-side, instant, no re-scan needed): IV Rank %
+  range (default 30-70), max bid-ask spread $ (default 0.10), min open interest
+  (default 1000), max stock price $ (default 500). The spread/OI filters apply
+  per leg -- a stock stays listed if either leg qualifies, with the other
+  leg's cells blanked; a stock is dropped entirely only if neither leg
+  qualifies, or its price/IV Rank fails the stock-level filters.
+- **IV Rank is a proxy**: true IV Rank needs a 1-year history of the *options
+  market's own* implied vol, which no free source provides for an 850-stock
+  universe. `src/iv_rank.py` instead computes the percentile rank of trailing
+  20-day realized volatility within its own 1-year range -- a reasonable "is
+  this name in an elevated-vol regime" signal, but it can diverge from real IV
+  Rank, especially around known upcoming events (IV prices those in ahead of
+  time; realized vol obviously can't yet). Computed via batched `yf.download`
+  (not per-ticker), and refreshed on its own ~daily cadence
+  (`src/iv_rank_job.py`, `IvRankJob`, `realtime_data/iv_rank_cache.json`) since
+  it barely moves within a day and every extra Yahoo call is extra rate-limit
+  risk -- decoupled from the option scan's ~15-min cycle on purpose.
 - **Data source**: live yfinance quotes/chains (~15-20min delayed, free, no
   auth). Yahoo's unofficial endpoint rate-limits hard (HTTP 429) well before any
   useful concurrency, so `src/scanner.py` scans **sequentially** with a fixed
@@ -95,7 +122,9 @@ AAL wheel rules:
   dashboard startup (skipped if the on-disk cache is still fresh), then every
   `REFRESH_SECONDS`, writing `realtime_data/scanner_cache.json`. `/api/scan`
   serves the cache instantly; `/api/scan/refresh` (the dashboard's "Refresh
-  now" button) wakes the loop early.
+  now" button) wakes the loop early. It also merges in the latest `iv_rank_pct`
+  per symbol from `IvRankJob` (injected as `iv_rank_provider`, so this module
+  doesn't need to know that job's cadence or cache format).
 
 ## Strategy legs
 
@@ -129,7 +158,9 @@ or dataclass to the next.
 | `advisor.py` | Turns the rules + a live quote + your `PortfolioState` into an `Advice`: `compute_live_features()` (the same feature definitions, one latest row) then `advise()`, which dry-runs the legs and reviews open positions to produce ranked `Recommendation`s (ROLL / CLOSE / SELL_CSP / SELL_CC / WAIT). Rolling parameter selection is a TODO. |
 | `dashboard/app.py` + `templates/index.html` | Flask, two tabs. AAL Wheel: `/api/advice` (polled every 6s) + `/api/history`. Premium Scanner: `/api/scan` (cache, polled every 15s) + `/api/scan/refresh` (manual trigger). |
 | `scanner.py` | Live cross-sectional ATM premium scan (see "Premium scanner" above). `scan_universe(symbols)` -> DataFrame, one row per ticker. |
-| `scanner_job.py` | Background loop that owns the scan cadence, disk cache, and manual-refresh wake-up for the dashboard. |
+| `scanner_job.py` | Background loop that owns the scan cadence, disk cache, and manual-refresh wake-up for the dashboard; merges in `iv_rank_pct` from an injected provider. |
+| `iv_rank.py` | `compute_rv_rank(symbols)` -- the realized-vol-percentile proxy for IV Rank, batched via `yf.download`. |
+| `iv_rank_job.py` | Background loop maintaining that proxy on its own slow (~daily) cadence, decoupled from the option scan. |
 | `pricing.py` | Black-Scholes price, greeks, implied-vol solve. |
 | `features.py` | Daily features from `MarketData`: rolling 3Y/1Y price percentile (main signal), realised vol, IV percentile, momentum. |
 | `csp/`, `cc/` | The two legs. `leg.py` in each holds the ladder function and the `rebalance()` that decides what to sell that day. |

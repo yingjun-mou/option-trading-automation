@@ -11,6 +11,12 @@ from .realtime import REALTIME_DIR
 
 UNIVERSE_FILE = REALTIME_DIR / "universe.json"
 DTE_RANGE = (25, 45)          # target expiry window: near-monthly, matches the wheel's own tenor
+# yfinance zeroes bid/ask outside regular trading hours (confirmed: AAPL/TSLA show
+# bid=ask=0 overnight even though they traded seconds before the close). A recent
+# lastPrice is a reasonable stand-in then -- but only if it is actually recent;
+# INIO's lastPrice was a real trade, just from 9 days earlier at a different spot.
+# So: use lastPrice as a "closing price" fallback within this window, otherwise none.
+MAX_CLOSE_STALENESS_DAYS = 4
 
 # Yahoo's unofficial quote/options endpoint rate-limits (HTTP 429) hard and fast --
 # testing this module with even modest concurrency (4 workers) got an IP-wide block
@@ -24,11 +30,13 @@ RETRY_BACKOFF = 15.0
 
 RESULT_COLUMNS = [
     "symbol", "spot", "expiration", "dte", "atm_strike",
-    "call_bid", "call_ask", "put_bid", "put_ask",
+    "call_bid", "call_ask", "call_oi", "call_volume",
+    "put_bid", "put_ask", "put_oi", "put_volume",
     "cc_premium", "csp_premium",
     "cc_reward_pct", "cc_reward_pct_annualized",
     "csp_reward_pct", "csp_reward_pct_annualized",
-    "cc_thin", "csp_thin",
+    "cc_live", "csp_live",
+    "iv_rank_pct",
     "error",
 ]
 
@@ -51,15 +59,47 @@ def _pick_expiration(expirations: tuple[str, ...], today: date,
     return min(in_range or cands, key=lambda c: abs(c[1] - mid))
 
 
-def _premium(row: pd.Series) -> float:
-    """What a seller would actually receive: the bid, falling back to a
-    conservative half-spread estimate or last trade when no bid is quoted."""
-    bid, ask = float(row.get("bid") or 0), float(row.get("ask") or 0)
+def _safe_num(x, cast, default=0):
+    """cast(x) but treating NaN/None as `default` -- yfinance leaves some
+    columns (e.g. `volume`) as NaN rather than 0, and `nan or 0` is still
+    `nan` in Python since NaN is truthy."""
+    try:
+        return default if x is None or pd.isna(x) else cast(x)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(x) -> int:
+    return _safe_num(x, int, 0)
+
+
+def _safe_float(x) -> float:
+    return _safe_num(x, float, 0.0)
+
+
+def _premium(row: pd.Series, now: pd.Timestamp) -> tuple[float | None, bool]:
+    """Returns (premium, is_live_bid).
+
+    Prefers the live bid -- what a seller would actually receive right now.
+    With no bid (common outside market hours, or a genuinely thin contract),
+    falls back to the last trade price, but ONLY if that trade is recent; a
+    stale lastPrice can sit at a wildly different underlying price (confirmed
+    on INIO: lastPrice=$7 from a trade 9 days earlier -- bid=ask=0 -- while
+    the real market was ~$0.35) and reporting that as today's premium is
+    simply wrong, not just optimistic."""
+    bid = _safe_float(row.get("bid"))
     if bid > 0:
-        return bid
-    if ask > 0:
-        return ask / 2
-    return float(row.get("lastPrice") or 0)
+        return bid, True
+    last_price = _safe_float(row.get("lastPrice"))
+    last_trade = row.get("lastTradeDate")
+    if last_price > 0 and last_trade is not None and not pd.isna(last_trade):
+        ts = pd.Timestamp(last_trade)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        age_days = (now - ts).total_seconds() / 86400
+        if 0 <= age_days <= MAX_CLOSE_STALENESS_DAYS:
+            return last_price, False
+    return None, False
 
 
 def _is_rate_limited(exc: Exception) -> bool:
@@ -92,27 +132,29 @@ def _scan_one(symbol: str, dte_range: tuple[int, int] = DTE_RANGE) -> dict:
             crow = calls.loc[(calls["strike"] - atm_strike).abs().idxmin()]
             prow = puts.loc[(puts["strike"] - atm_strike).abs().idxmin()]
 
-            cc_premium, csp_premium = _premium(crow), _premium(prow)
+            now = pd.Timestamp.now("UTC")
+            cc_premium, cc_live = _premium(crow, now)
+            csp_premium, csp_live = _premium(prow, now)
             # Contract multiplier (100 shares/collateral) cancels in both ratios.
-            cc_reward = cc_premium / spot
-            csp_reward = csp_premium / atm_strike
             annualize = 365 / dte
-            call_oi = float(crow.get("openInterest") or 0) + float(crow.get("volume") or 0)
-            put_oi = float(prow.get("openInterest") or 0) + float(prow.get("volume") or 0)
+            cc_reward = cc_premium / spot if cc_premium is not None else None
+            csp_reward = csp_premium / atm_strike if csp_premium is not None else None
 
             return dict(
                 symbol=symbol, spot=round(spot, 2), expiration=expiration, dte=dte,
                 atm_strike=atm_strike,
-                call_bid=float(crow.get("bid") or 0), call_ask=float(crow.get("ask") or 0),
-                put_bid=float(prow.get("bid") or 0), put_ask=float(prow.get("ask") or 0),
-                cc_premium=round(cc_premium, 3), csp_premium=round(csp_premium, 3),
-                cc_reward_pct=round(cc_reward, 5),
-                cc_reward_pct_annualized=round(cc_reward * annualize, 4),
-                csp_reward_pct=round(csp_reward, 5),
-                csp_reward_pct_annualized=round(csp_reward * annualize, 4),
-                # No open interest AND no trades today -- the quote is likely stale/wide
-                # and the reward% for that leg should not be trusted at face value.
-                cc_thin=call_oi <= 0, csp_thin=put_oi <= 0,
+                call_bid=_safe_float(crow.get("bid")), call_ask=_safe_float(crow.get("ask")),
+                call_oi=_safe_int(crow.get("openInterest")), call_volume=_safe_int(crow.get("volume")),
+                put_bid=_safe_float(prow.get("bid")), put_ask=_safe_float(prow.get("ask")),
+                put_oi=_safe_int(prow.get("openInterest")), put_volume=_safe_int(prow.get("volume")),
+                cc_premium=round(cc_premium, 3) if cc_premium is not None else None,
+                csp_premium=round(csp_premium, 3) if csp_premium is not None else None,
+                cc_reward_pct=round(cc_reward, 5) if cc_reward is not None else None,
+                cc_reward_pct_annualized=round(cc_reward * annualize, 4) if cc_reward is not None else None,
+                csp_reward_pct=round(csp_reward, 5) if csp_reward is not None else None,
+                csp_reward_pct_annualized=round(csp_reward * annualize, 4) if csp_reward is not None else None,
+                cc_live=cc_live, csp_live=csp_live,
+                iv_rank_pct=None,  # filled in by ScannerJob from the (separately cached) IV-rank job
                 error=None,
             )
         except Exception as e:  # noqa: BLE001 -- one bad ticker must not sink the scan

@@ -60,21 +60,38 @@
   .scan-status .live { color: var(--up); }
   .scan-status .busy { color: var(--warn); }
   .scan-head .spacer { flex: 1; }
-  .sortbtn { background: var(--panel); border: 1px solid var(--line); color: var(--text);
-    font: inherit; font-size: 12px; padding: 6px 12px; border-radius: 6px; cursor: pointer; }
-  .sortbtn.active { border-color: var(--accent); color: var(--accent); }
   .refreshbtn { background: var(--accent); border: none; color: #0b0d10; font: inherit;
     font-size: 12px; font-weight: 600; padding: 6px 14px; border-radius: 6px; cursor: pointer; }
   .refreshbtn:disabled { opacity: .5; cursor: default; }
+
+  .filters { display: flex; align-items: flex-end; gap: 18px; flex-wrap: wrap;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 16px; margin-bottom: 14px; }
+  .filters .f { display: flex; flex-direction: column; gap: 4px; }
+  .filters label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .filters .range { display: flex; align-items: center; gap: 6px; }
+  .filters input[type="number"] { width: 64px; background: var(--bg); border: 1px solid var(--line);
+    color: var(--text); font: inherit; font-size: 13px; padding: 5px 7px; border-radius: 6px; }
+  .filters input[type="number"]:focus { outline: none; border-color: var(--accent); }
+  .filters .dash { color: var(--muted); }
+  .filters .count { color: var(--muted); font-size: 12px; margin-left: auto; align-self: center; }
+  .filters .resetbtn { background: none; border: 1px solid var(--line); color: var(--muted);
+    font: inherit; font-size: 12px; padding: 6px 10px; border-radius: 6px; cursor: pointer; align-self: center; }
+  .filters .resetbtn:hover { color: var(--text); }
+
   table.scan { width: 100%; border-collapse: collapse; font-size: 13px; }
   table.scan th { text-align: right; color: var(--muted); font-weight: 600; font-size: 11px;
-    text-transform: uppercase; letter-spacing: .04em; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+    text-transform: uppercase; letter-spacing: .04em; padding: 6px 10px; border-bottom: 1px solid var(--line);
+    cursor: pointer; user-select: none; white-space: nowrap; }
+  table.scan th:hover { color: var(--text); }
+  table.scan th.sorted { color: var(--accent); }
   table.scan th:first-child, table.scan th:nth-child(2) { text-align: left; }
   table.scan td { text-align: right; padding: 7px 10px; border-bottom: 1px dotted var(--line); }
   table.scan td:first-child { text-align: left; color: var(--muted); }
   table.scan td:nth-child(2) { text-align: left; font-weight: 600; }
   table.scan tbody tr:hover { background: rgba(255,255,255,.03); }
   .reward-hi { color: var(--up); font-weight: 600; }
+  .close-px { color: var(--muted); font-size: 10px; vertical-align: super; }
 </style>
 </head>
 <body>
@@ -114,26 +131,51 @@
       <h1>Premium Scanner</h1>
       <span class="scan-status" id="scanStatus">loading ...</span>
       <div class="spacer"></div>
-      <button class="sortbtn active" id="sortCC" data-sort="cc_reward_pct_annualized">Top by CC reward %</button>
-      <button class="sortbtn" id="sortCSP" data-sort="csp_reward_pct_annualized">Top by CSP reward %</button>
       <button class="refreshbtn" id="scanRefreshBtn">Refresh now</button>
     </div>
+
+    <div class="filters">
+      <div class="f">
+        <label>IV Rank % (min&ndash;max)</label>
+        <div class="range">
+          <input type="number" id="fIvMin" min="0" max="100" step="5" value="30">
+          <span class="dash">&ndash;</span>
+          <input type="number" id="fIvMax" min="0" max="100" step="5" value="70">
+        </div>
+      </div>
+      <div class="f">
+        <label>Max bid-ask spread ($)</label>
+        <input type="number" id="fSpread" min="0" step="0.01" value="0.10">
+      </div>
+      <div class="f">
+        <label>Min open interest</label>
+        <input type="number" id="fOi" min="0" step="50" value="1000">
+      </div>
+      <div class="f">
+        <label>Max stock price ($)</label>
+        <input type="number" id="fPrice" min="0" step="10" value="500">
+      </div>
+      <button class="resetbtn" id="fReset">Reset to defaults</button>
+      <span class="count" id="scanCount"></span>
+    </div>
+
     <div style="overflow-x:auto">
       <table class="scan">
-        <thead><tr>
-          <th>#</th><th>Symbol</th><th>Spot</th><th>Expiry</th><th>DTE</th><th>ATM strike</th>
-          <th>CC prem</th><th>CC reward%</th><th>CC reward% (ann.)</th>
-          <th>CSP prem</th><th>CSP reward%</th><th>CSP reward% (ann.)</th>
-        </tr></thead>
-        <tbody id="scanBody"><tr><td colspan="12" style="color:var(--muted)">loading ...</td></tr></tbody>
+        <thead><tr id="scanHead"></tr></thead>
+        <tbody id="scanBody"><tr><td colspan="13" style="color:var(--muted)">loading ...</td></tr></tbody>
       </table>
     </div>
-    <footer>ATM premium = bid price at the strike nearest spot, nearest expiry in the 25-45 DTE
-      window. CC reward% = premium / spot. CSP reward% = premium / strike (= collateral per share).
-      &#9888; flags a leg with no open interest or volume today -- its quote may be stale or
-      artificially wide; treat that reward% with caution. Live Yahoo Finance quotes, ~15-20min
-      delayed. Universe: S&amp;P 500 + top 500 Nasdaq-listed by market cap. Suggestions only
-      &mdash; not investment advice.</footer>
+    <footer>ATM premium = live bid at the strike nearest spot, nearest expiry in the 25-45 DTE
+      window (falls back to the last trade price when the market is closed and that trade was
+      within the last few days -- shown as <span class="close-px">c</span>; otherwise the leg
+      shows &ndash;). CC reward% = premium / spot. CSP reward% = premium / strike (= collateral
+      per share). IV Rank is a <b>proxy</b>: percentile of trailing 20-day realized volatility
+      within its own 1-year range, not true historical implied vol (Yahoo's free feed has no
+      such series) -- it can diverge from real IV Rank, especially around known upcoming events.
+      Bid-ask-spread and open-interest filters apply per leg: a stock stays listed if either leg
+      qualifies, with the other leg blanked. Live Yahoo Finance quotes, ~15-20min delayed.
+      Universe: S&amp;P 500 + top 500 Nasdaq-listed by market cap. Suggestions only &mdash; not
+      investment advice.</footer>
   </div>
 </div>
 
@@ -249,11 +291,32 @@ document.querySelectorAll("nav.tabs button").forEach(btn => {
 });
 
 // -- premium scanner ----------------------------------------------------
-let scanSort = "cc_reward_pct_annualized";
+const SCAN_COLUMNS = [
+  { key: null,                         label: "#" },
+  { key: "symbol",                     label: "Symbol" },
+  { key: "spot",                       label: "Spot" },
+  { key: "iv_rank_pct",                label: "IV Rank" },
+  { key: "expiration",                 label: "Expiry" },
+  { key: "dte",                        label: "DTE" },
+  { key: "atm_strike",                 label: "ATM strike" },
+  { key: "cc_premium",                 label: "CC prem" },
+  { key: "cc_reward_pct",              label: "CC reward%" },
+  { key: "cc_reward_pct_annualized",   label: "CC reward% (ann.)" },
+  { key: "csp_premium",                label: "CSP prem" },
+  { key: "csp_reward_pct",             label: "CSP reward%" },
+  { key: "csp_reward_pct_annualized",  label: "CSP reward% (ann.)" },
+];
+
+let scanSortKey = "cc_reward_pct_annualized";
+let scanSortDir = -1;   // -1 = descending, 1 = ascending
 let lastScan = null;
 
-document.getElementById("sortCC").addEventListener("click", () => setScanSort("cc_reward_pct_annualized", "sortCC"));
-document.getElementById("sortCSP").addEventListener("click", () => setScanSort("csp_reward_pct_annualized", "sortCSP"));
+function currentFilters() {
+  const num = (id, dflt) => { const v = parseFloat(document.getElementById(id).value); return Number.isFinite(v) ? v : dflt; };
+  return { ivMin: num("fIvMin", 0), ivMax: num("fIvMax", 100), spread: num("fSpread", Infinity),
+            oi: num("fOi", 0), price: num("fPrice", Infinity) };
+}
+
 document.getElementById("scanRefreshBtn").addEventListener("click", async () => {
   const btn = document.getElementById("scanRefreshBtn");
   btn.disabled = true; btn.textContent = "Refreshing...";
@@ -262,28 +325,98 @@ document.getElementById("scanRefreshBtn").addEventListener("click", async () => 
   refreshScan();
 });
 
-function setScanSort(key, btnId) {
-  scanSort = key;
-  document.querySelectorAll(".sortbtn").forEach(b => b.classList.remove("active"));
-  document.getElementById(btnId).classList.add("active");
+["fIvMin", "fIvMax", "fSpread", "fOi", "fPrice"].forEach(id =>
+  document.getElementById(id).addEventListener("input", () => { if (lastScan) renderScanTable(lastScan); }));
+
+document.getElementById("fReset").addEventListener("click", () => {
+  document.getElementById("fIvMin").value = 30;
+  document.getElementById("fIvMax").value = 70;
+  document.getElementById("fSpread").value = 0.10;
+  document.getElementById("fOi").value = 1000;
+  document.getElementById("fPrice").value = 500;
   if (lastScan) renderScanTable(lastScan);
+});
+
+document.getElementById("scanHead").innerHTML = SCAN_COLUMNS.map(c =>
+  `<th${c.key ? ` data-key="${c.key}"` : ""}>${c.label}</th>`).join("");
+document.getElementById("scanHead").addEventListener("click", e => {
+  const th = e.target.closest("th[data-key]");
+  if (!th) return;
+  const key = th.dataset.key;
+  if (scanSortKey === key) { scanSortDir *= -1; }
+  else { scanSortKey = key; scanSortDir = (key === "symbol" || key === "expiration") ? 1 : -1; }
+  if (lastScan) renderScanTable(lastScan);
+});
+
+function legPasses(r, prefix, f) {
+  const premium = r[prefix + "_premium"];
+  if (premium === null || premium === undefined) return false;
+  const bid = r[prefix === "cc" ? "call_bid" : "put_bid"] || 0;
+  const ask = r[prefix === "cc" ? "call_ask" : "put_ask"] || 0;
+  const oi = r[prefix === "cc" ? "call_oi" : "put_oi"] || 0;
+  if ((ask - bid) > f.spread + 1e-9) return false;   // 0 when quote is a closing price (no live NBBO)
+  return oi >= f.oi;
 }
 
-const thinMark = thin => thin ? ' <span title="No open interest or volume today -- quote may be stale/wide" style="color:var(--warn)">&#9888;</span>' : '';
+function rowVisible(r, f) {
+  if (r.spot > f.price) return false;
+  if (r.iv_rank_pct !== null && r.iv_rank_pct !== undefined) {
+    const ivPct = r.iv_rank_pct * 100;
+    if (ivPct < f.ivMin || ivPct > f.ivMax) return false;
+  }
+  return true;
+}
+
+function sortRows(rows, key, dir) {
+  if (!key) return rows;
+  const withVal = [], withoutVal = [];
+  for (const r of rows) (r[key] === null || r[key] === undefined ? withoutVal : withVal).push(r);
+  withVal.sort((a, b) => typeof a[key] === "string" ? dir * a[key].localeCompare(b[key]) : dir * (a[key] - b[key]));
+  return withVal.concat(withoutVal);
+}
+
+const closePx = live => live === false ? ' <span class="close-px" title="Market closed -- this is the last trade price, not a live bid">c</span>' : '';
+
+function legCell(r, prefix, passes, premiumFmt, isRewardCol) {
+  if (!passes) return `<td style="color:var(--muted)">&ndash;</td>`;
+  if (premiumFmt === "premium") {
+    return `<td>$${F(r[prefix + "_premium"])}${closePx(r[prefix + "_live"])}</td>`;
+  }
+  const cls = isRewardCol ? " class=\"reward-hi\"" : "";
+  return `<td${cls}>${PCT(r[prefix + (premiumFmt === "ann" ? "_reward_pct_annualized" : "_reward_pct")])}</td>`;
+}
 
 function renderScanTable(data) {
-  const rows = (data.rows || []).slice().sort((a, b) => (b[scanSort] || -Infinity) - (a[scanSort] || -Infinity));
-  const top = rows.slice(0, 50);
-  const hiKey = scanSort;
-  document.getElementById("scanBody").innerHTML = top.length ? top.map((r, i) => `
-    <tr>
+  const f = currentFilters();
+  let rows = (data.rows || []).filter(r => rowVisible(r, f));
+  const passInfo = new Map(rows.map(r => [r.symbol, { cc: legPasses(r, "cc", f), csp: legPasses(r, "csp", f) }]));
+  rows = rows.filter(r => { const p = passInfo.get(r.symbol); return p.cc || p.csp; });
+  rows = sortRows(rows, scanSortKey, scanSortDir);
+  const top = rows.slice(0, 150);
+
+  document.querySelectorAll("#scanHead th").forEach(th => {
+    th.classList.toggle("sorted", th.dataset.key === scanSortKey);
+    const base = th.textContent.replace(/ [▲▼]$/, "");
+    th.textContent = th.dataset.key === scanSortKey ? base + (scanSortDir === 1 ? " ▲" : " ▼") : base;
+  });
+
+  document.getElementById("scanCount").textContent =
+    data.rows && data.rows.length ? `${rows.length} of ${data.rows.length} stocks shown` : "";
+
+  document.getElementById("scanBody").innerHTML = top.length ? top.map((r, i) => {
+    const p = passInfo.get(r.symbol);
+    return `<tr>
       <td>${i + 1}</td><td>${r.symbol}</td><td>$${F(r.spot)}</td>
+      <td>${r.iv_rank_pct == null ? "&ndash;" : PCT(r.iv_rank_pct)}</td>
       <td>${r.expiration}</td><td>${F(r.dte, 0)}</td><td>${F(r.atm_strike)}</td>
-      <td>$${F(r.cc_premium)}${thinMark(r.cc_thin)}</td><td>${PCT(r.cc_reward_pct)}</td>
-      <td class="${hiKey === 'cc_reward_pct_annualized' ? 'reward-hi' : ''}">${PCT(r.cc_reward_pct_annualized)}</td>
-      <td>$${F(r.csp_premium)}${thinMark(r.csp_thin)}</td><td>${PCT(r.csp_reward_pct)}</td>
-      <td class="${hiKey === 'csp_reward_pct_annualized' ? 'reward-hi' : ''}">${PCT(r.csp_reward_pct_annualized)}</td>
-    </tr>`).join("") : `<tr><td colspan="12" style="color:var(--muted)">no results yet</td></tr>`;
+      ${legCell(r, "cc", p.cc, "premium")}
+      ${legCell(r, "cc", p.cc, "pct", scanSortKey === "cc_reward_pct")}
+      ${legCell(r, "cc", p.cc, "ann", scanSortKey === "cc_reward_pct_annualized")}
+      ${legCell(r, "csp", p.csp, "premium")}
+      ${legCell(r, "csp", p.csp, "pct", scanSortKey === "csp_reward_pct")}
+      ${legCell(r, "csp", p.csp, "ann", scanSortKey === "csp_reward_pct_annualized")}
+    </tr>`;
+  }).join("") : `<tr><td colspan="13" style="color:var(--muted)">no stocks match the current filters</td></tr>`;
 }
 
 async function refreshScan() {
@@ -303,9 +436,9 @@ async function refreshScan() {
   } else if (data.error) {
     statusEl.innerHTML = `<span class="busy">scan error: ${data.error}</span>`;
   } else {
-    statusEl.innerHTML = `<span class="live">${data.scanned} ranked</span>` +
+    statusEl.innerHTML = `<span class="live">${data.scanned} scanned</span>` +
       (data.failed ? ` &middot; ${data.failed} skipped (no quote/options)` : "") +
-      ` &middot; as of ${asOf} &middot; auto-refreshes every 15 min`;
+      ` &middot; as of ${asOf} &middot; auto-refreshes every ~15 min`;
   }
   renderScanTable(data);
 }

@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 from src.advisor import PortfolioState, advise, compute_live_features  # noqa: E402
 from src.datasource import load_default  # noqa: E402
 from src.features import build_features  # noqa: E402
+from src.iv_rank_job import IvRankJob  # noqa: E402
 from src.realtime import MOCK_DIR, default_realtime_source  # noqa: E402
 from src.scanner_job import ScannerJob  # noqa: E402
 from src.wheel import WheelConfig  # noqa: E402
@@ -44,7 +45,9 @@ HIST_CLOSE = _hist_features["close"]
 HIST_IV30 = _hist_features["iv_30"]
 CONFIG = _load_config()
 SOURCE = default_realtime_source()
-SCANNER = ScannerJob()
+IV_RANK = IvRankJob()
+IV_RANK.start()
+SCANNER = ScannerJob(iv_rank_provider=lambda: IV_RANK.ranks)
 SCANNER.start()
 print(f"dashboard: config={CONFIG.label}  feed={type(SOURCE).__name__}  ready")
 

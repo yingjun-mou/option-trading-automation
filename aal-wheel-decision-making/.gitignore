@@ -7,6 +7,7 @@ realtime_data/**/*.csv
 realtime_data/**/*.parquet
 realtime_data/mock/portfolio.json
 realtime_data/scanner_cache.json
+realtime_data/iv_rank_cache.json
 
 !**/README.md
 !realtime_data/mock/portfolio.example.json
