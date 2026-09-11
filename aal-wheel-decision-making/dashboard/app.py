@@ -1,3 +1,8 @@
+"""Flask app for the advisor dashboard: two tabs, two JSON APIs. AAL Wheel
+(`/api/advice`, `/api/history`) polls a live quote through the same rules as
+the research backtest. Premium Scanner (`/api/scan`, `/api/scan/refresh`)
+serves the background ScannerJob's cached cross-sectional scan."""
+
 from __future__ import annotations
 
 import json
@@ -26,11 +31,13 @@ app.config["TEMPLATES_AUTO_RELOAD"] = True
 
 @app.after_request
 def _no_cache(resp):
+    """Every response is a live snapshot -- never let the browser cache one."""
     resp.headers["Cache-Control"] = "no-store"
     return resp
 
 
 def _load_config() -> WheelConfig:
+    """The research pipeline's optimised config if it's been run, else defaults."""
     if OPTIMIZED_CONFIG.exists():
         raw = json.loads(OPTIMIZED_CONFIG.read_text())
         raw.pop("label", None)
@@ -53,6 +60,7 @@ print(f"dashboard: config={CONFIG.label}  feed={type(SOURCE).__name__}  ready")
 
 
 def _current_advice():
+    """One fresh Advice: live quote + chain -> features -> `advisor.advise()`."""
     quote = SOURCE.quote()
     chain_df = SOURCE.option_chain()
     feats = compute_live_features(HIST_CLOSE, HIST_IV30, quote.price, SOURCE.atm_iv,
@@ -63,28 +71,33 @@ def _current_advice():
 
 @app.route("/")
 def index():
+    """The single-page dashboard (both tabs; JS fetches the APIs below)."""
     return render_template("index.html", config_label=CONFIG.label)
 
 
 @app.route("/api/advice")
 def api_advice():
+    """Polled every 6s by the AAL Wheel tab."""
     from dataclasses import asdict
     return jsonify(asdict(_current_advice()))
 
 
 @app.route("/api/history")
 def api_history():
+    """Recent closes for the AAL Wheel tab's sparkline."""
     closes = SOURCE.recent_closes(120)
     return jsonify(dates=[str(d.date()) for d in closes.index], close=[float(c) for c in closes])
 
 
 @app.route("/api/scan")
 def api_scan():
+    """Polled every 15s by the Premium Scanner tab -- the cached scan, not a live one."""
     return jsonify(SCANNER.snapshot())
 
 
 @app.route("/api/scan/refresh", methods=["POST"])
 def api_scan_refresh():
+    """The Premium Scanner tab's "Refresh now" button."""
     SCANNER.trigger_refresh()
     return jsonify(triggered=True)
 

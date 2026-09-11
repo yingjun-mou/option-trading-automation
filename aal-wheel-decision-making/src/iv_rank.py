@@ -1,3 +1,7 @@
+"""Realized-vol-percentile proxy for "IV Rank" (see `compute_rv_rank`'s
+docstring for why it's a proxy, not the real thing). Maintained on its own
+slow cadence by `iv_rank_job.IvRankJob`, decoupled from the option scan."""
+
 from __future__ import annotations
 
 import time
@@ -12,6 +16,8 @@ CHUNK_GAP = 1.5
 
 
 def _extract_close(data: pd.DataFrame, symbol: str, single: bool) -> pd.Series | None:
+    """Pull one symbol's Close series out of a (possibly multi-ticker)
+    `yf.download` result; None if `symbol` isn't in it."""
     try:
         if single:
             return data["Close"].dropna()

@@ -1,3 +1,6 @@
+"""Background loop that keeps `iv_rank.compute_rv_rank()` fresh on its own
+slow (~daily) cadence and caches it to disk -- see IvRankJob's docstring."""
+
 from __future__ import annotations
 
 import json
@@ -32,6 +35,8 @@ class IvRankJob:
         self._load_cache()
 
     def _load_cache(self) -> None:
+        """Seed `self.ranks` from CACHE_FILE if present, so there's something
+        to serve immediately on startup, before the first computation runs."""
         if not self.cache_file.exists():
             return
         try:
@@ -42,10 +47,12 @@ class IvRankJob:
             pass
 
     def _write_cache(self) -> None:
+        """Persist the current ranks so a restart can reuse them (see `_load_cache`)."""
         self.cache_file.parent.mkdir(parents=True, exist_ok=True)
         self.cache_file.write_text(json.dumps({"as_of": self.as_of, "ranks": self.ranks}))
 
     def _cache_age_seconds(self) -> float | None:
+        """Seconds since the cached ranks were computed, or None if there aren't any yet."""
         if not self.as_of:
             return None
         try:
@@ -55,6 +62,7 @@ class IvRankJob:
             return None
 
     def _run(self) -> None:
+        """Recompute `self.ranks` for the full universe and cache it."""
         try:
             self.ranks = compute_rv_rank(load_universe())
             self.as_of = pd.Timestamp.now("UTC").isoformat(timespec="seconds")
@@ -63,6 +71,10 @@ class IvRankJob:
             pass  # keep serving the last good ranks; next cycle tries again
 
     def _loop(self) -> None:
+        """Runs forever on a background thread: wait until the cache would go
+        stale (or `startup_delay` on a cold start), recompute, repeat every
+        `interval`. The startup delay -- rather than computing immediately --
+        lets the option scan claim Yahoo's attention first."""
         age = self._cache_age_seconds()
         wait_s = (self.interval - age) if (age is not None and age < self.interval) else self.startup_delay
         self._wake.wait(wait_s)
@@ -73,4 +85,5 @@ class IvRankJob:
             self._wake.clear()
 
     def start(self) -> None:
+        """Launch the background loop (daemon thread -- doesn't block process exit)."""
         threading.Thread(target=self._loop, daemon=True).start()

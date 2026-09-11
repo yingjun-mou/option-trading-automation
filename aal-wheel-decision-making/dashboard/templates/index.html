@@ -294,6 +294,8 @@ document.querySelectorAll("nav.tabs button").forEach(btn => {
 });
 
 // -- premium scanner ----------------------------------------------------
+// Drives both the header row (built once below) and click-to-sort; `key`
+// null means "not sortable" (only the "#" rank column).
 const SCAN_COLUMNS = [
   { key: null,                         label: "#" },
   { key: "symbol",                     label: "Symbol" },
@@ -314,6 +316,8 @@ let scanSortKey = "cc_reward_pct_annualized";
 let scanSortDir = -1;   // -1 = descending, 1 = ascending
 let lastScan = null;
 
+/** Reads the filter inputs into {ivMin, ivMax, spread, oi, price}, falling
+ * back to a permissive default per field if the box is empty/invalid. */
 function currentFilters() {
   const num = (id, dflt) => { const v = parseFloat(document.getElementById(id).value); return Number.isFinite(v) ? v : dflt; };
   return { ivMin: num("fIvMin", 0), ivMax: num("fIvMax", 100), spread: num("fSpread", Infinity),
@@ -328,6 +332,8 @@ document.getElementById("scanRefreshBtn").addEventListener("click", async () => 
   await refreshScan();  // pick up the new "scanning" status right away instead of waiting up to 15s
 });
 
+/** Disables the refresh button and relabels it while a scan is already
+ * running -- called on every poll, not just after a manual click. */
 function syncRefreshButton(status) {
   const btn = document.getElementById("scanRefreshBtn");
   btn.disabled = status === "scanning";
@@ -357,6 +363,8 @@ document.getElementById("scanHead").addEventListener("click", e => {
   if (lastScan) renderScanTable(lastScan);
 });
 
+/** Whether one leg (prefix "cc" or "csp") of row `r` clears the spread/
+ * liquidity filters -- no premium at all always fails regardless of `f`. */
 function legPasses(r, prefix, f) {
   const premium = r[prefix + "_premium"];
   if (premium === null || premium === undefined) return false;
@@ -371,6 +379,9 @@ function legPasses(r, prefix, f) {
   return Math.max(oi, vol) >= f.oi;
 }
 
+/** Stock-level filters (price, IV Rank) -- unlike legPasses, these hide the
+ * whole row. A null iv_rank_pct (not computed yet) always passes rather
+ * than hiding every row before IvRankJob's first cycle completes. */
 function rowVisible(r, f) {
   if (r.spot > f.price) return false;
   if (r.iv_rank_pct !== null && r.iv_rank_pct !== undefined) {
@@ -380,6 +391,9 @@ function rowVisible(r, f) {
   return true;
 }
 
+/** Sorts by `key` (dir: 1 asc, -1 desc), pushing rows with no value for
+ * `key` to the end regardless of direction. No-ops if `key` is null (the
+ * "#" column). */
 function sortRows(rows, key, dir) {
   if (!key) return rows;
   const withVal = [], withoutVal = [];
@@ -388,8 +402,14 @@ function sortRows(rows, key, dir) {
   return withVal.concat(withoutVal);
 }
 
+/** Superscript "c" marking a premium as a closing price rather than a live
+ * bid (cc_live/csp_live === false); nothing for a live quote or a missing one. */
 const closePx = live => live === false ? ' <span class="close-px" title="Market closed -- this is the last trade price, not a live bid">c</span>' : '';
 
+/** One <td> for leg `prefix`'s premium ("premium"), reward% ("pct"), or
+ * annualized reward% ("ann"); a filtered-out leg (passes=false) renders "-"
+ * regardless of format. `isRewardCol` highlights the cell matching the
+ * current sort column. */
 function legCell(r, prefix, passes, premiumFmt, isRewardCol) {
   if (!passes) return `<td style="color:var(--muted)">&ndash;</td>`;
   if (premiumFmt === "premium") {
@@ -399,6 +419,10 @@ function legCell(r, prefix, passes, premiumFmt, isRewardCol) {
   return `<td${cls}>${PCT(r[prefix + (premiumFmt === "ann" ? "_reward_pct_annualized" : "_reward_pct")])}</td>`;
 }
 
+/** Applies filters + sort to `data.rows` and redraws the table, header
+ * sort indicators, and the "N of M shown" count. Pure function of
+ * `data` and the current filter/sort state -- safe to call on every
+ * filter-input change without a network round-trip. */
 function renderScanTable(data) {
   const f = currentFilters();
   let rows = (data.rows || []).filter(r => rowVisible(r, f));
@@ -432,6 +456,10 @@ function renderScanTable(data) {
   }).join("") : `<tr><td colspan="13" style="color:var(--muted)">no stocks match the current filters</td></tr>`;
 }
 
+/** Polled every 15s (and once right after a manual refresh): fetches
+ * /api/scan, updates the status line and refresh button, and redraws
+ * the table from whatever it got (even mid-scan, that's still the last
+ * complete cache -- see the "scanning" branch below). */
 async function refreshScan() {
   let data;
   try {

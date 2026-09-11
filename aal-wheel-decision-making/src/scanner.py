@@ -1,3 +1,10 @@
+"""Live cross-sectional ATM option-premium scan (the dashboard's Premium
+Scanner tab). `scan_universe()` fetches one row per ticker -- spot, the
+nearest-ATM strike at a near-monthly expiry, and the covered-call/cash-
+secured-put "reward %" (premium as a fraction of the capital each leg ties
+up). See the README's "Premium scanner" section for the full picture;
+`scanner_job.ScannerJob` owns the background cadence and disk cache."""
+
 from __future__ import annotations
 
 import json
@@ -42,6 +49,7 @@ RESULT_COLUMNS = [
 
 
 def load_universe(path: Path = UNIVERSE_FILE) -> list[str]:
+    """Ticker list to scan, as built by `scripts/build_universe.py`."""
     if not path.exists():
         raise FileNotFoundError(
             f"{path} not found -- run `python scripts/build_universe.py` first")
@@ -50,6 +58,8 @@ def load_universe(path: Path = UNIVERSE_FILE) -> list[str]:
 
 def _pick_expiration(expirations: tuple[str, ...], today: date,
                      dte_range: tuple[int, int] = DTE_RANGE) -> tuple[str, int] | None:
+    """(expiration, dte) closest to the midpoint of `dte_range`, preferring
+    an expiration actually inside that range; None if none are in the future."""
     cands = [(e, (date.fromisoformat(e) - today).days) for e in expirations]
     cands = [c for c in cands if c[1] > 0]
     if not cands:
@@ -103,11 +113,35 @@ def _premium(row: pd.Series, now: pd.Timestamp) -> tuple[float | None, bool]:
 
 
 def _is_rate_limited(exc: Exception) -> bool:
+    """True if `exc` looks like Yahoo's HTTP 429 rather than some other failure."""
     msg = str(exc).lower()
     return "429" in msg or "too many requests" in msg or "rate limit" in msg
 
 
+def _leg_quote(row: pd.Series) -> dict:
+    """NaN-safe bid/ask/open-interest/volume for one option leg."""
+    return dict(bid=_safe_float(row.get("bid")), ask=_safe_float(row.get("ask")),
+                oi=_safe_int(row.get("openInterest")), volume=_safe_int(row.get("volume")))
+
+
+def _reward_pct(premium: float | None, denominator: float,
+                annualize: float) -> tuple[float | None, float | None]:
+    """(reward_pct, reward_pct_annualized) = premium / denominator, or (None,
+    None) with no premium. `denominator` is spot for CC, strike for CSP --
+    the 100-share/collateral contract multiplier cancels out of the ratio
+    either way, so callers pass per-share values throughout."""
+    if premium is None:
+        return None, None
+    pct = premium / denominator
+    return round(pct, 5), round(pct * annualize, 4)
+
+
 def _scan_one(symbol: str, dte_range: tuple[int, int] = DTE_RANGE) -> dict:
+    """One ticker's scan row: `{"symbol": ..., "error": None, ...}` on
+    success, or `{"symbol": ..., "error": "<reason>"}` on failure -- a bad
+    ticker returns an error row rather than raising, so `scan_universe` can
+    keep going. Retries once on a 429 (see REQUEST_GAP note above) before
+    giving up."""
     import yfinance as yf
 
     attempt = 0
@@ -131,28 +165,24 @@ def _scan_one(symbol: str, dte_range: tuple[int, int] = DTE_RANGE) -> dict:
             atm_strike = float(calls.loc[(calls["strike"] - spot).abs().idxmin(), "strike"])
             crow = calls.loc[(calls["strike"] - atm_strike).abs().idxmin()]
             prow = puts.loc[(puts["strike"] - atm_strike).abs().idxmin()]
+            cq, pq = _leg_quote(crow), _leg_quote(prow)
 
             now = pd.Timestamp.now("UTC")
             cc_premium, cc_live = _premium(crow, now)
             csp_premium, csp_live = _premium(prow, now)
-            # Contract multiplier (100 shares/collateral) cancels in both ratios.
             annualize = 365 / dte
-            cc_reward = cc_premium / spot if cc_premium is not None else None
-            csp_reward = csp_premium / atm_strike if csp_premium is not None else None
+            cc_reward_pct, cc_reward_pct_ann = _reward_pct(cc_premium, spot, annualize)
+            csp_reward_pct, csp_reward_pct_ann = _reward_pct(csp_premium, atm_strike, annualize)
 
             return dict(
                 symbol=symbol, spot=round(spot, 2), expiration=expiration, dte=dte,
                 atm_strike=atm_strike,
-                call_bid=_safe_float(crow.get("bid")), call_ask=_safe_float(crow.get("ask")),
-                call_oi=_safe_int(crow.get("openInterest")), call_volume=_safe_int(crow.get("volume")),
-                put_bid=_safe_float(prow.get("bid")), put_ask=_safe_float(prow.get("ask")),
-                put_oi=_safe_int(prow.get("openInterest")), put_volume=_safe_int(prow.get("volume")),
+                call_bid=cq["bid"], call_ask=cq["ask"], call_oi=cq["oi"], call_volume=cq["volume"],
+                put_bid=pq["bid"], put_ask=pq["ask"], put_oi=pq["oi"], put_volume=pq["volume"],
                 cc_premium=round(cc_premium, 3) if cc_premium is not None else None,
                 csp_premium=round(csp_premium, 3) if csp_premium is not None else None,
-                cc_reward_pct=round(cc_reward, 5) if cc_reward is not None else None,
-                cc_reward_pct_annualized=round(cc_reward * annualize, 4) if cc_reward is not None else None,
-                csp_reward_pct=round(csp_reward, 5) if csp_reward is not None else None,
-                csp_reward_pct_annualized=round(csp_reward * annualize, 4) if csp_reward is not None else None,
+                cc_reward_pct=cc_reward_pct, cc_reward_pct_annualized=cc_reward_pct_ann,
+                csp_reward_pct=csp_reward_pct, csp_reward_pct_annualized=csp_reward_pct_ann,
                 cc_live=cc_live, csp_live=csp_live,
                 iv_rank_pct=None,  # filled in by ScannerJob from the (separately cached) IV-rank job
                 error=None,

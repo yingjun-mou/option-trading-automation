@@ -1,8 +1,11 @@
+"""Background loop that runs `scanner.scan_universe()` on a cadence, caches
+the result to disk, and serves it to the dashboard (`ScannerJob.snapshot()`
+-> `/api/scan`). See scanner.py's module docstring for the feature overview."""
+
 from __future__ import annotations
 
 import json
 import threading
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -63,6 +66,8 @@ class ScannerJob:
         self._load_cache()
 
     def _load_cache(self) -> None:
+        """Seed `self.state` from CACHE_FILE if present, so the dashboard has
+        something to show immediately on startup, before the first scan runs."""
         if not self.cache_file.exists():
             return
         try:
@@ -75,6 +80,7 @@ class ScannerJob:
             pass
 
     def _write_cache(self) -> None:
+        """Persist the current results so a restart can reuse them (see `_load_cache`)."""
         self.cache_file.parent.mkdir(parents=True, exist_ok=True)
         self.cache_file.write_text(json.dumps({
             "as_of": self.state.as_of,
@@ -84,6 +90,8 @@ class ScannerJob:
         }))
 
     def _run_scan(self) -> None:
+        """Scan the full universe once, merge in IV Rank, and cache the
+        result. No-ops if a scan is already running."""
         with self._lock:
             if self.state.status == "scanning":
                 return
@@ -110,6 +118,7 @@ class ScannerJob:
             self.state.status = "idle"
 
     def _cache_age_seconds(self) -> float | None:
+        """Seconds since the cached scan, or None if there isn't one yet."""
         if not self.state.as_of:
             return None
         try:
@@ -120,6 +129,8 @@ class ScannerJob:
             return None
 
     def _loop(self) -> None:
+        """Runs forever on a background thread: scan, wait `interval`, repeat.
+        `trigger_refresh()` interrupts the wait to scan sooner."""
         # A restart (dev reload, crash recovery) shouldn't blow away a still-fresh
         # cache by immediately re-scanning 800+ tickers against a rate-limited API --
         # only fire early if the cache is missing or already stale.
@@ -133,12 +144,15 @@ class ScannerJob:
             self._wake.clear()
 
     def start(self) -> None:
+        """Launch the background loop (daemon thread -- doesn't block process exit)."""
         threading.Thread(target=self._loop, daemon=True).start()
 
     def trigger_refresh(self) -> None:
+        """Wake the loop early -- the dashboard's manual "Refresh now" button."""
         self._wake.set()
 
     def snapshot(self) -> dict:
+        """Current state as a plain dict, ready for `jsonify()` -- what `/api/scan` serves."""
         s = self.state
         return dict(status=s.status, as_of=s.as_of, scanned=s.scanned, failed=s.failed,
                     progress=list(s.progress), error=s.error, rows=s.rows)
