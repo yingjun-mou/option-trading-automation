@@ -13,6 +13,7 @@ from src.advisor import PortfolioState, advise, compute_live_features  # noqa: E
 from src.datasource import load_default  # noqa: E402
 from src.features import build_features  # noqa: E402
 from src.realtime import MOCK_DIR, default_realtime_source  # noqa: E402
+from src.scanner_job import ScannerJob  # noqa: E402
 from src.wheel import WheelConfig  # noqa: E402
 
 OPTIMIZED_CONFIG = ROOT / "results" / "optimized_config.json"
@@ -43,6 +44,8 @@ HIST_CLOSE = _hist_features["close"]
 HIST_IV30 = _hist_features["iv_30"]
 CONFIG = _load_config()
 SOURCE = default_realtime_source()
+SCANNER = ScannerJob()
+SCANNER.start()
 print(f"dashboard: config={CONFIG.label}  feed={type(SOURCE).__name__}  ready")
 
 
@@ -70,6 +73,17 @@ def api_advice():
 def api_history():
     closes = SOURCE.recent_closes(120)
     return jsonify(dates=[str(d.date()) for d in closes.index], close=[float(c) for c in closes])
+
+
+@app.route("/api/scan")
+def api_scan():
+    return jsonify(SCANNER.snapshot())
+
+
+@app.route("/api/scan/refresh", methods=["POST"])
+def api_scan_refresh():
+    SCANNER.trigger_refresh()
+    return jsonify(triggered=True)
 
 
 if __name__ == "__main__":

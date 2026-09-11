@@ -46,6 +46,35 @@
   .pos { font-size: 13px; border-bottom: 1px solid var(--line); padding: 8px 0; }
   .pos .r { color: var(--muted); }
   footer { color: var(--muted); font-size: 12px; padding: 4px 20px 20px; }
+
+  nav.tabs { padding: 0 20px; display: flex; gap: 4px; border-bottom: 1px solid var(--line); }
+  nav.tabs button { background: none; border: none; color: var(--muted); font: inherit;
+    padding: 10px 14px; cursor: pointer; border-bottom: 2px solid transparent; }
+  nav.tabs button.active { color: var(--text); border-bottom-color: var(--accent); }
+  nav.tabs button:hover { color: var(--text); }
+
+  .scan-wrap { padding: 16px 20px; }
+  .scan-head { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; flex-wrap: wrap; }
+  .scan-head h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  .scan-status { color: var(--muted); font-size: 12px; }
+  .scan-status .live { color: var(--up); }
+  .scan-status .busy { color: var(--warn); }
+  .scan-head .spacer { flex: 1; }
+  .sortbtn { background: var(--panel); border: 1px solid var(--line); color: var(--text);
+    font: inherit; font-size: 12px; padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+  .sortbtn.active { border-color: var(--accent); color: var(--accent); }
+  .refreshbtn { background: var(--accent); border: none; color: #0b0d10; font: inherit;
+    font-size: 12px; font-weight: 600; padding: 6px 14px; border-radius: 6px; cursor: pointer; }
+  .refreshbtn:disabled { opacity: .5; cursor: default; }
+  table.scan { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.scan th { text-align: right; color: var(--muted); font-weight: 600; font-size: 11px;
+    text-transform: uppercase; letter-spacing: .04em; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+  table.scan th:first-child, table.scan th:nth-child(2) { text-align: left; }
+  table.scan td { text-align: right; padding: 7px 10px; border-bottom: 1px dotted var(--line); }
+  table.scan td:first-child { text-align: left; color: var(--muted); }
+  table.scan td:nth-child(2) { text-align: left; font-weight: 600; }
+  table.scan tbody tr:hover { background: rgba(255,255,255,.03); }
+  .reward-hi { color: var(--up); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -55,23 +84,58 @@
   <span class="cfg">rules: {{ config_label }} &middot; refresh 6s</span>
 </header>
 
-<div class="wrap">
-  <section class="panel">
-    <div><span class="price" id="price">--</span><span class="chg" id="chg"></span></div>
-    <div class="asof" id="asof">connecting to advisor ...</div>
-    <svg id="spark" viewBox="0 0 600 90" preserveAspectRatio="none"></svg>
-    <div class="sig-grid" id="signals"></div>
-  </section>
+<nav class="tabs">
+  <button class="tab active" data-tab="wheel">AAL Wheel</button>
+  <button class="tab" data-tab="scanner">Premium Scanner</button>
+</nav>
 
-  <section class="panel">
-    <h2>Recommendation</h2>
-    <div id="recs"><p style="color:var(--muted)">loading ...</p></div>
-    <h2 style="margin-top:18px">Open positions</h2>
-    <div id="positions"><p style="color:var(--muted)">none</p></div>
-  </section>
+<div id="tab-wheel" class="tabpanel">
+  <div class="wrap">
+    <section class="panel">
+      <div><span class="price" id="price">--</span><span class="chg" id="chg"></span></div>
+      <div class="asof" id="asof">connecting to advisor ...</div>
+      <svg id="spark" viewBox="0 0 600 90" preserveAspectRatio="none"></svg>
+      <div class="sig-grid" id="signals"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Recommendation</h2>
+      <div id="recs"><p style="color:var(--muted)">loading ...</p></div>
+      <h2 style="margin-top:18px">Open positions</h2>
+      <div id="positions"><p style="color:var(--muted)">none</p></div>
+    </section>
+  </div>
+  <footer>Suggestions only &mdash; execute manually. Not investment advice.</footer>
 </div>
 
-<footer>Suggestions only &mdash; execute manually. Not investment advice.</footer>
+<div id="tab-scanner" class="tabpanel" hidden>
+  <div class="scan-wrap">
+    <div class="scan-head">
+      <h1>Premium Scanner</h1>
+      <span class="scan-status" id="scanStatus">loading ...</span>
+      <div class="spacer"></div>
+      <button class="sortbtn active" id="sortCC" data-sort="cc_reward_pct_annualized">Top by CC reward %</button>
+      <button class="sortbtn" id="sortCSP" data-sort="csp_reward_pct_annualized">Top by CSP reward %</button>
+      <button class="refreshbtn" id="scanRefreshBtn">Refresh now</button>
+    </div>
+    <div style="overflow-x:auto">
+      <table class="scan">
+        <thead><tr>
+          <th>#</th><th>Symbol</th><th>Spot</th><th>Expiry</th><th>DTE</th><th>ATM strike</th>
+          <th>CC prem</th><th>CC reward%</th><th>CC reward% (ann.)</th>
+          <th>CSP prem</th><th>CSP reward%</th><th>CSP reward% (ann.)</th>
+        </tr></thead>
+        <tbody id="scanBody"><tr><td colspan="12" style="color:var(--muted)">loading ...</td></tr></tbody>
+      </table>
+    </div>
+    <footer>ATM premium = bid price at the strike nearest spot, nearest expiry in the 25-45 DTE
+      window. CC reward% = premium / spot. CSP reward% = premium / strike (= collateral per share).
+      &#9888; flags a leg with no open interest or volume today -- its quote may be stale or
+      artificially wide; treat that reward% with caution. Live Yahoo Finance quotes, ~15-20min
+      delayed. Universe: S&amp;P 500 + top 500 Nasdaq-listed by market cap. Suggestions only
+      &mdash; not investment advice.</footer>
+  </div>
+</div>
 
 <script>
 const F = (x, d = 2) => (x === null || x === undefined || Number.isNaN(x)) ? "-" : Number(x).toFixed(d);
@@ -172,6 +236,82 @@ drawSpark();
 refresh();
 setInterval(refresh, 6000);
 setInterval(drawSpark, 60000);
+
+// -- tabs -------------------------------------------------------------
+document.querySelectorAll("nav.tabs button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("nav.tabs button").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    document.getElementById("tab-wheel").hidden = btn.dataset.tab !== "wheel";
+    document.getElementById("tab-scanner").hidden = btn.dataset.tab !== "scanner";
+    if (btn.dataset.tab === "scanner") refreshScan();
+  });
+});
+
+// -- premium scanner ----------------------------------------------------
+let scanSort = "cc_reward_pct_annualized";
+let lastScan = null;
+
+document.getElementById("sortCC").addEventListener("click", () => setScanSort("cc_reward_pct_annualized", "sortCC"));
+document.getElementById("sortCSP").addEventListener("click", () => setScanSort("csp_reward_pct_annualized", "sortCSP"));
+document.getElementById("scanRefreshBtn").addEventListener("click", async () => {
+  const btn = document.getElementById("scanRefreshBtn");
+  btn.disabled = true; btn.textContent = "Refreshing...";
+  try { await fetch("/api/scan/refresh", { method: "POST" }); } catch (e) {}
+  setTimeout(() => { btn.disabled = false; btn.textContent = "Refresh now"; }, 3000);
+  refreshScan();
+});
+
+function setScanSort(key, btnId) {
+  scanSort = key;
+  document.querySelectorAll(".sortbtn").forEach(b => b.classList.remove("active"));
+  document.getElementById(btnId).classList.add("active");
+  if (lastScan) renderScanTable(lastScan);
+}
+
+const thinMark = thin => thin ? ' <span title="No open interest or volume today -- quote may be stale/wide" style="color:var(--warn)">&#9888;</span>' : '';
+
+function renderScanTable(data) {
+  const rows = (data.rows || []).slice().sort((a, b) => (b[scanSort] || -Infinity) - (a[scanSort] || -Infinity));
+  const top = rows.slice(0, 50);
+  const hiKey = scanSort;
+  document.getElementById("scanBody").innerHTML = top.length ? top.map((r, i) => `
+    <tr>
+      <td>${i + 1}</td><td>${r.symbol}</td><td>$${F(r.spot)}</td>
+      <td>${r.expiration}</td><td>${F(r.dte, 0)}</td><td>${F(r.atm_strike)}</td>
+      <td>$${F(r.cc_premium)}${thinMark(r.cc_thin)}</td><td>${PCT(r.cc_reward_pct)}</td>
+      <td class="${hiKey === 'cc_reward_pct_annualized' ? 'reward-hi' : ''}">${PCT(r.cc_reward_pct_annualized)}</td>
+      <td>$${F(r.csp_premium)}${thinMark(r.csp_thin)}</td><td>${PCT(r.csp_reward_pct)}</td>
+      <td class="${hiKey === 'csp_reward_pct_annualized' ? 'reward-hi' : ''}">${PCT(r.csp_reward_pct_annualized)}</td>
+    </tr>`).join("") : `<tr><td colspan="12" style="color:var(--muted)">no results yet</td></tr>`;
+}
+
+async function refreshScan() {
+  let data;
+  try {
+    data = await (await fetch("/api/scan", { cache: "no-store" })).json();
+  } catch (e) {
+    document.getElementById("scanStatus").textContent = "cannot reach the advisor: " + e.message;
+    return;
+  }
+  lastScan = data;
+  const statusEl = document.getElementById("scanStatus");
+  const asOf = data.as_of ? new Date(data.as_of).toLocaleString() : "never";
+  if (data.status === "scanning") {
+    const [i, n] = data.progress || [0, 0];
+    statusEl.innerHTML = `<span class="busy">scanning... ${i}/${n}</span> &middot; last complete scan: ${asOf}`;
+  } else if (data.error) {
+    statusEl.innerHTML = `<span class="busy">scan error: ${data.error}</span>`;
+  } else {
+    statusEl.innerHTML = `<span class="live">${data.scanned} ranked</span>` +
+      (data.failed ? ` &middot; ${data.failed} skipped (no quote/options)` : "") +
+      ` &middot; as of ${asOf} &middot; auto-refreshes every 15 min`;
+  }
+  renderScanTable(data);
+}
+
+refreshScan();
+setInterval(refreshScan, 15000);
 </script>
 </body>
 </html>
