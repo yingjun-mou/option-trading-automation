@@ -321,12 +321,18 @@ function currentFilters() {
 }
 
 document.getElementById("scanRefreshBtn").addEventListener("click", async () => {
+  if (lastScan && lastScan.status === "scanning") return;  // already running -- see syncRefreshButton
   const btn = document.getElementById("scanRefreshBtn");
-  btn.disabled = true; btn.textContent = "Refreshing...";
+  btn.disabled = true; btn.textContent = "Starting...";
   try { await fetch("/api/scan/refresh", { method: "POST" }); } catch (e) {}
-  setTimeout(() => { btn.disabled = false; btn.textContent = "Refresh now"; }, 3000);
-  refreshScan();
+  await refreshScan();  // pick up the new "scanning" status right away instead of waiting up to 15s
 });
+
+function syncRefreshButton(status) {
+  const btn = document.getElementById("scanRefreshBtn");
+  btn.disabled = status === "scanning";
+  btn.textContent = status === "scanning" ? "Scanning..." : "Refresh now";
+}
 
 ["fIvMin", "fIvMax", "fSpread", "fOi", "fPrice"].forEach(id =>
   document.getElementById(id).addEventListener("input", () => { if (lastScan) renderScanTable(lastScan); }));
@@ -435,11 +441,13 @@ async function refreshScan() {
     return;
   }
   lastScan = data;
+  syncRefreshButton(data.status);
   const statusEl = document.getElementById("scanStatus");
   const asOf = data.as_of ? new Date(data.as_of).toLocaleString() : "never";
   if (data.status === "scanning") {
     const [i, n] = data.progress || [0, 0];
-    statusEl.innerHTML = `<span class="busy">scanning... ${i}/${n}</span> &middot; last complete scan: ${asOf}`;
+    statusEl.innerHTML = `<span class="busy">scanning... ${i}/${n}</span> &middot; ` +
+      `table below is still the last complete scan (${asOf}) until this finishes`;
   } else if (data.error) {
     statusEl.innerHTML = `<span class="busy">scan error: ${data.error}</span>`;
   } else {
