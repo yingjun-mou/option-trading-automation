@@ -148,7 +148,7 @@
         <input type="number" id="fSpread" min="0" step="0.01" value="0.10">
       </div>
       <div class="f">
-        <label>Min open interest</label>
+        <label title="Yahoo's openInterest is frequently 0 even on heavily-traded contracts, so this checks max(open interest, today's volume)">Min open interest*</label>
         <input type="number" id="fOi" min="0" step="50" value="1000">
       </div>
       <div class="f">
@@ -173,7 +173,10 @@
       within its own 1-year range, not true historical implied vol (Yahoo's free feed has no
       such series) -- it can diverge from real IV Rank, especially around known upcoming events.
       Bid-ask-spread and open-interest filters apply per leg: a stock stays listed if either leg
-      qualifies, with the other leg blanked. Live Yahoo Finance quotes, ~15-20min delayed.
+      qualifies, with the other leg blanked. *Yahoo's openInterest field is frequently 0 even on
+      heavily-traded contracts (confirmed on AAPL/SPY/TSLA across strikes and expirations -- a
+      gap in their free feed, not a market reality), so "min open interest" checks
+      max(open interest, today's volume). Live Yahoo Finance quotes, ~15-20min delayed.
       Universe: S&amp;P 500 + top 500 Nasdaq-listed by market cap. Suggestions only &mdash; not
       investment advice.</footer>
   </div>
@@ -354,8 +357,12 @@ function legPasses(r, prefix, f) {
   const bid = r[prefix === "cc" ? "call_bid" : "put_bid"] || 0;
   const ask = r[prefix === "cc" ? "call_ask" : "put_ask"] || 0;
   const oi = r[prefix === "cc" ? "call_oi" : "put_oi"] || 0;
+  const vol = r[prefix === "cc" ? "call_volume" : "put_volume"] || 0;
   if ((ask - bid) > f.spread + 1e-9) return false;   // 0 when quote is a closing price (no live NBBO)
-  return oi >= f.oi;
+  // Yahoo's openInterest is frequently 0 even on heavily-traded contracts (confirmed on
+  // AAPL/SPY/TSLA across strikes and expirations -- a known gap in their free feed, not
+  // a market reality), so same-day volume also counts as evidence of a liquid contract.
+  return Math.max(oi, vol) >= f.oi;
 }
 
 function rowVisible(r, f) {
