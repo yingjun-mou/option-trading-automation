@@ -31,6 +31,18 @@ class ScannerState:
     rows: list[dict] = field(default_factory=list)
 
 
+def _price_percentile(spot: float, recent_closes: list[float] | None) -> float | None:
+    """Where `spot` -- today's LIVE quote, not a stale daily close -- sits
+    (0-1 percentile) against a trailing window of historical closes. Same
+    definition as advisor.py's pct_1y/pct_3y signals: the fraction of the
+    window at or below the current price. None with no window to compare
+    against yet (IvRankJob hasn't completed its first cycle)."""
+    if not recent_closes:
+        return None
+    closes = pd.Series(recent_closes)
+    return float((closes <= spot).mean())
+
+
 def _json_safe(obj):
     """Recursively replace float NaN with None -- pandas leaves genuinely
     missing numeric fields (e.g. cc_premium with no live/recent quote) as
@@ -51,9 +63,11 @@ class ScannerJob:
     it immediately (used by the dashboard's manual refresh button).
 
     `iv_rank_provider`, if given, is called once per scan to get the current
-    {symbol: rv_rank_proxy} map (see iv_rank_job.IvRankJob) and merge it into
-    each row -- kept as an injected callable so this module doesn't need to
-    know that job's refresh cadence or cache format."""
+    {symbol: {"iv_rank_pct": ..., "recent_closes": [...]}} map (see
+    iv_rank_job.IvRankJob) and merge iv_rank_pct + a live-computed price_pct
+    (today's scanned spot ranked against recent_closes) into each row --
+    kept as an injected callable so this module doesn't need to know that
+    job's refresh cadence or cache format."""
 
     def __init__(self, cache_file: Path = CACHE_FILE, interval: int = REFRESH_SECONDS,
                 iv_rank_provider=None):
@@ -90,8 +104,8 @@ class ScannerJob:
         }))
 
     def _run_scan(self) -> None:
-        """Scan the full universe once, merge in IV Rank, and cache the
-        result. No-ops if a scan is already running."""
+        """Scan the full universe once, merge in IV Rank + price percentile,
+        and cache the result. No-ops if a scan is already running."""
         with self._lock:
             if self.state.status == "scanning":
                 return
@@ -103,10 +117,13 @@ class ScannerJob:
             df = scan_universe(symbols, on_progress=lambda i, n: setattr(self.state, "progress", (i, n)))
             ok = df[df["error"].isna()].drop(columns=["error"])
             if self.iv_rank_provider is not None:
-                ranks = self.iv_rank_provider()
-                if ranks:
+                signals = self.iv_rank_provider()
+                if signals:
                     ok = ok.copy()
-                    ok["iv_rank_pct"] = ok["symbol"].map(ranks)
+                    ok["iv_rank_pct"] = ok["symbol"].map(lambda s: signals.get(s, {}).get("iv_rank_pct"))
+                    ok["price_pct"] = ok.apply(
+                        lambda r: _price_percentile(r["spot"], signals.get(r["symbol"], {}).get("recent_closes")),
+                        axis=1)
             self.state.rows = _json_safe(ok.to_dict(orient="records"))
             self.state.scanned = len(ok)
             self.state.failed = int(df["error"].notna().sum())

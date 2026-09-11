@@ -94,25 +94,37 @@ AAL wheel rules:
     number at all rather than a guess.
   - `call_oi`/`call_volume`/`put_oi`/`put_volume` are the raw open-interest and
     same-day volume, exposed for the dashboard's liquidity filters.
-  - `iv_rank_pct` is filled in from `src/iv_rank.py` (see below) -- a **proxy**,
-    not true IV Rank.
+  - `iv_rank_pct` and `price_pct` are filled in from `src/iv_rank.py` (see
+    below) -- the former a **proxy**, not true IV Rank.
 - **Dashboard filters** (client-side, instant, no re-scan needed): IV Rank %
   range (default 30-70), max bid-ask spread $ (default 0.10), min open interest
   (default 1000), max stock price $ (default 500). The spread/OI filters apply
   per leg -- a stock stays listed if either leg qualifies, with the other
   leg's cells blanked; a stock is dropped entirely only if neither leg
   qualifies, or its price/IV Rank fails the stock-level filters.
+- **Price %ile column**: today's *live* spot ranked (0-100%) against its
+  trailing ~3-month daily closes -- same definition as `advisor.py`'s
+  `pct_1y`/`pct_3y` signals (fraction of the window at or below the current
+  price), just on a shorter window suited to "is this a rich day to sell a
+  covered call" rather than the wheel's multi-year entry-ladder framing.
+  Color-coded in the UI: green at or above the 75th percentile, red at or
+  below the 25th, amber between. Deliberately mixes a *live* number (spot,
+  refreshed every scan cycle) with a *slow* one (the historical window, see
+  below) rather than freezing the percentile to yesterday's close, since the
+  whole point is catching an intraday move.
 - **IV Rank is a proxy**: true IV Rank needs a 1-year history of the *options
   market's own* implied vol, which no free source provides for an 850-stock
   universe. `src/iv_rank.py` instead computes the percentile rank of trailing
   20-day realized volatility within its own 1-year range -- a reasonable "is
   this name in an elevated-vol regime" signal, but it can diverge from real IV
   Rank, especially around known upcoming events (IV prices those in ahead of
-  time; realized vol obviously can't yet). Computed via batched `yf.download`
-  (not per-ticker), and refreshed on its own ~daily cadence
-  (`src/iv_rank_job.py`, `IvRankJob`, `realtime_data/iv_rank_cache.json`) since
-  it barely moves within a day and every extra Yahoo call is extra rate-limit
-  risk -- decoupled from the option scan's ~15-min cycle on purpose.
+  time; realized vol obviously can't yet). The same function also returns each
+  symbol's trailing ~3-month closes (`recent_closes`), used for the Price
+  %ile column above -- one batched `yf.download` per symbol feeds both
+  signals rather than fetching history twice. Refreshed on its own ~daily
+  cadence (`src/iv_rank_job.py`, `IvRankJob`, `realtime_data/iv_rank_cache.json`)
+  since both barely move within a day and every extra Yahoo call is extra
+  rate-limit risk -- decoupled from the option scan's ~15-min cycle on purpose.
 - **Data source**: live yfinance quotes/chains (~15-20min delayed, free, no
   auth). Yahoo's unofficial endpoint rate-limits hard (HTTP 429) well before any
   useful concurrency, so `src/scanner.py` scans **sequentially** with a fixed
@@ -159,7 +171,7 @@ or dataclass to the next.
 | `dashboard/app.py` + `templates/index.html` | Flask, two tabs. AAL Wheel: `/api/advice` (polled every 6s) + `/api/history`. Premium Scanner: `/api/scan` (cache, polled every 15s) + `/api/scan/refresh` (manual trigger). |
 | `scanner.py` | Live cross-sectional ATM premium scan (see "Premium scanner" above). `scan_universe(symbols)` -> DataFrame, one row per ticker. |
 | `scanner_job.py` | Background loop that owns the scan cadence, disk cache, and manual-refresh wake-up for the dashboard; merges in `iv_rank_pct` from an injected provider. |
-| `iv_rank.py` | `compute_rv_rank(symbols)` -- the realized-vol-percentile proxy for IV Rank, batched via `yf.download`. |
+| `iv_rank.py` | `compute_market_signals(symbols)` -- the realized-vol-percentile proxy for IV Rank plus each symbol's trailing closes (for the scanner's live Price %ile column), both batched via one `yf.download` per symbol. |
 | `iv_rank_job.py` | Background loop maintaining that proxy on its own slow (~daily) cadence, decoupled from the option scan. |
 | `pricing.py` | Black-Scholes price, greeks, implied-vol solve. |
 | `features.py` | Daily features from `MarketData`: rolling 3Y/1Y price percentile (main signal), realised vol, IV percentile, momentum. |

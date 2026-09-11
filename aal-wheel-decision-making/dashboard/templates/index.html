@@ -92,6 +92,11 @@
   table.scan tbody tr:hover { background: rgba(255,255,255,.03); }
   .reward-hi { color: var(--up); font-weight: 600; }
   .close-px { color: var(--muted); font-size: 10px; vertical-align: super; }
+  .pct-pill { display: inline-block; min-width: 38px; padding: 2px 6px; border-radius: 4px;
+    font-weight: 600; }
+  .pct-hi { background: rgba(63,185,80,.18); color: var(--up); }     /* top quartile: >=75% */
+  .pct-lo { background: rgba(248,81,73,.18); color: var(--down); }   /* bottom quartile: <=25% */
+  .pct-mid { background: rgba(210,153,34,.18); color: var(--warn); } /* everything in between */
 </style>
 </head>
 <body>
@@ -162,14 +167,17 @@
     <div style="overflow-x:auto">
       <table class="scan">
         <thead><tr id="scanHead"></tr></thead>
-        <tbody id="scanBody"><tr><td colspan="13" style="color:var(--muted)">loading ...</td></tr></tbody>
+        <tbody id="scanBody"><tr><td colspan="14" style="color:var(--muted)">loading ...</td></tr></tbody>
       </table>
     </div>
     <footer>ATM premium = live bid at the strike nearest spot, nearest expiry in the 25-45 DTE
       window (falls back to the last trade price when the market is closed and that trade was
       within the last few days -- shown as <span class="close-px">c</span>; otherwise the leg
       shows &ndash;). CC reward% = premium / spot. CSP reward% = premium / strike (= collateral
-      per share). IV Rank is a <b>proxy</b>: percentile of trailing 20-day realized volatility
+      per share). Price %ile = today's live price ranked against its trailing ~3-month daily
+      closes -- <span class="pct-pill pct-hi">green</span> in the top quartile (&ge;75%),
+      <span class="pct-pill pct-lo">red</span> in the bottom quartile (&le;25%), amber in between.
+      IV Rank is a <b>proxy</b>: percentile of trailing 20-day realized volatility
       within its own 1-year range, not true historical implied vol (Yahoo's free feed has no
       such series) -- it can diverge from real IV Rank, especially around known upcoming events.
       Bid-ask-spread and open-interest filters apply per leg: a stock stays listed if either leg
@@ -300,6 +308,7 @@ const SCAN_COLUMNS = [
   { key: null,                         label: "#" },
   { key: "symbol",                     label: "Symbol" },
   { key: "spot",                       label: "Spot" },
+  { key: "price_pct",                  label: "Price %ile" },
   { key: "iv_rank_pct",                label: "IV Rank" },
   { key: "expiration",                 label: "Expiry" },
   { key: "dte",                        label: "DTE" },
@@ -406,6 +415,14 @@ function sortRows(rows, key, dir) {
  * bid (cc_live/csp_live === false); nothing for a live quote or a missing one. */
 const closePx = live => live === false ? ' <span class="close-px" title="Market closed -- this is the last trade price, not a live bid">c</span>' : '';
 
+/** One <td> for a 0-1 percentile: a colored pill, green/red/amber by
+ * quartile (>=75% / <=25% / between); "-" if `pct` isn't computed yet. */
+function pctCell(pct) {
+  if (pct === null || pct === undefined) return `<td>&ndash;</td>`;
+  const cls = pct >= 0.75 ? "pct-hi" : pct <= 0.25 ? "pct-lo" : "pct-mid";
+  return `<td><span class="pct-pill ${cls}">${PCT(pct)}</span></td>`;
+}
+
 /** One <td> for leg `prefix`'s premium ("premium"), reward% ("pct"), or
  * annualized reward% ("ann"); a filtered-out leg (passes=false) renders "-"
  * regardless of format. `isRewardCol` highlights the cell matching the
@@ -444,6 +461,7 @@ function renderScanTable(data) {
     const p = passInfo.get(r.symbol);
     return `<tr>
       <td>${i + 1}</td><td>${r.symbol}</td><td>$${F(r.spot)}</td>
+      ${pctCell(r.price_pct)}
       <td>${r.iv_rank_pct == null ? "&ndash;" : PCT(r.iv_rank_pct)}</td>
       <td>${r.expiration}</td><td>${F(r.dte, 0)}</td><td>${F(r.atm_strike)}</td>
       ${legCell(r, "cc", p.cc, "premium")}
@@ -453,7 +471,7 @@ function renderScanTable(data) {
       ${legCell(r, "csp", p.csp, "pct", scanSortKey === "csp_reward_pct")}
       ${legCell(r, "csp", p.csp, "ann", scanSortKey === "csp_reward_pct_annualized")}
     </tr>`;
-  }).join("") : `<tr><td colspan="13" style="color:var(--muted)">no stocks match the current filters</td></tr>`;
+  }).join("") : `<tr><td colspan="14" style="color:var(--muted)">no stocks match the current filters</td></tr>`;
 }
 
 /** Polled every 15s (and once right after a manual refresh): fetches
