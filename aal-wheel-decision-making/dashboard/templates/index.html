@@ -111,6 +111,7 @@
   table.macro td:last-child .pct-pill { font-size: 13px; }
   table.macro tr.macro-section td { color: var(--accent); font-size: 11px; text-transform: uppercase;
     letter-spacing: .04em; padding-top: 14px; border-bottom: 1px solid var(--line); }
+  .score-rule { color: var(--muted); font-size: 11px; }
 
   .regime-badge { display: flex; align-items: baseline; gap: 10px; margin: 2px 0 14px; }
   .regime-label { font-size: 19px; font-weight: 700; padding: 4px 12px; border-radius: 8px;
@@ -757,13 +758,24 @@ function macroBreadthCell(breadth) {
   return `<td><span class="pct-pill ${cls}">${PCT(breadth)}</span></td>`;
 }
 
+/** Picks which threshold text explains a condition's +1/0/-1 outcome --
+ * the rule that was actually satisfied, not just both rules unconditionally,
+ * so it reads as "why", not just "here are the two thresholds". */
+function scoreRule(part, upText, downText, neutralText) {
+  if (part > 0) return upText;
+  if (part < 0) return downText;
+  return neutralText;
+}
+
 /** One row of the slow score's 4-condition breakdown: `valueText` (already
- * formatted) plus a +1/0/-1 pill for that condition's contribution. */
-function scoreRow(label, valueText, part) {
+ * formatted), `ruleText` (the threshold that produced this outcome, from
+ * scoreRule), and a +1/0/-1 pill for the contribution itself. */
+function scoreRow(label, valueText, part, ruleText) {
   if (part === null || part === undefined) return `<tr><td>${label}</td><td>${valueText}</td></tr>`;
   const cls = part > 0 ? "pct-hi" : part < 0 ? "pct-lo" : "pct-mid";
   const sign = part > 0 ? "+1" : part < 0 ? "-1" : "0";
-  return `<tr><td>${label}</td><td>${valueText} <span class="pct-pill ${cls}">${sign}</span></td></tr>`;
+  const rule = ruleText ? ` <span class="score-rule">(${ruleText})</span>` : "";
+  return `<tr><td>${label}</td><td>${valueText}${rule} <span class="pct-pill ${cls}">${sign}</span></td></tr>`;
 }
 
 const REGIME_CLASS = {
@@ -806,12 +818,16 @@ async function refreshMacro() {
     <tr><td>VIX / VIX3M</td>${macroVixRatioCell(s.vix_over_vix3m)}</tr>
     <tr><td>Nasdaq-100 breadth</td>${macroBreadthCell(s.nasdaq100_breadth)}</tr>
     <tr class="macro-section"><td colspan="2">Slow score (tier 1)</td></tr>
-    ${scoreRow("Price / SMA200 (calc)", ratioText(s.qqq_price, s.sma200_calc), p.price_vs_sma200)}
-    ${scoreRow("SMA50 / SMA200 (calc)", ratioText(s.sma50_calc, s.sma200_calc), p.sma50_vs_sma200)}
-    ${scoreRow("Slope 200 (20d)", s.slope_200 != null ? PCT(s.slope_200) : "-", p.slope_200)}
+    ${scoreRow("Price / SMA200 (calc)", ratioText(s.qqq_price, s.sma200_calc), p.price_vs_sma200,
+      scoreRule(p.price_vs_sma200, ">1.03", "<0.97", "0.97-1.03"))}
+    ${scoreRow("SMA50 / SMA200 (calc)", ratioText(s.sma50_calc, s.sma200_calc), p.sma50_vs_sma200,
+      scoreRule(p.sma50_vs_sma200, ">1.01", "<0.99", "0.99-1.01"))}
+    ${scoreRow("Slope 200 (20d)", s.slope_200 != null ? PCT(s.slope_200) : "-", p.slope_200,
+      scoreRule(p.slope_200, ">+0.5%", "<-0.5%", "-0.5% to +0.5%"))}
     ${scoreRow("+DI / -DI (14)",
       (s.plus_di_14 != null && s.minus_di_14 != null)
-        ? s.plus_di_14.toFixed(1) + " / " + s.minus_di_14.toFixed(1) : "-", p.directional)}
+        ? s.plus_di_14.toFixed(1) + " / " + s.minus_di_14.toFixed(1) : "-", p.directional,
+      scoreRule(p.directional, "+DI>-DI", "+DI<-DI", "+DI=-DI"))}
   `;
   updateRegimeBadge(s);
   document.getElementById("macroAsOf").textContent =
