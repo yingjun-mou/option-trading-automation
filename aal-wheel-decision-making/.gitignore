@@ -2,6 +2,7 @@ historical_data/**/*.csv
 historical_data/**/*.parquet
 historical_data/*.csv
 historical_data/*.parquet
+!historical_data/stock_aal.csv
 
 realtime_data/**/*.csv
 realtime_data/**/*.parquet

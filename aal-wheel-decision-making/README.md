@@ -56,13 +56,27 @@ there, never in a subdirectory, even though this project lives inside a
 larger repo) target [Render](https://render.com)'s free tier specifically,
 since that's what this project was set up against. Free tier means the
 instance **spins down after ~15 min idle** and has **no persistent disk** --
-every time you open the
-dashboard after a gap, it's a cold start: no cached scan, so it kicks off a
-fresh multi-minute scan against Yahoo before the Premium Scanner tab has
-data (the AAL Wheel tab is unaffected -- its own historical data just
-re-fetches from yfinance once, in a couple seconds). This was a deliberate
-choice over paid always-on hosting; see this project's chat history if you
-want to revisit that tradeoff later.
+every time you open the dashboard after a gap, it's a cold start:
+
+- **Premium Scanner**: no cached scan, so "Refresh now" kicks off a fresh
+  multi-minute scan against Yahoo.
+- **AAL Wheel**: its context (historical features + live-quote source) now
+  builds lazily on first use rather than blocking the app from starting at
+  all (see `_get_aal_context()` in `dashboard/app.py` -- this used to be
+  eager, and building it doubled as gunicorn's own startup validation,
+  which blocked the port from ever opening long enough that Render's deploy
+  outright failed with "no open ports detected"). The first request to this
+  tab is still slow, though, for a real reason: `historical_data/mock/`'s
+  synthetic options file (~124MB, regenerated via a per-day Black-Scholes
+  loop across ~13 years) is too large to commit to git, so a fresh deploy
+  regenerates it from scratch. `historical_data/stock_aal.csv` (379KB) *is*
+  committed, so at least that half is instant and network-free.
+
+This was a deliberate choice over paid always-on hosting; see this
+project's chat history if you want to revisit that tradeoff later, or want
+the AAL Wheel tab's cold-start cost reduced further (e.g. a smaller
+synthetic-data window for the dashboard's own use, separate from the full
+backtest's).
 
 1. Push this repo to GitHub (already the case if you're reading this from a
    clone of it).
