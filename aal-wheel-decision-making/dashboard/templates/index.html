@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AAL Wheel Advisor</title>
+<title>Stock Trading Automation</title>
 <style>
   :root {
     --bg: #0f1115; --panel: #171a21; --line: #262b36; --text: #e6e8ec;
@@ -16,8 +16,6 @@
   header { padding: 14px 20px; border-bottom: 1px solid var(--line);
     display: flex; align-items: baseline; gap: 14px; }
   header h1 { font-size: 15px; margin: 0; font-weight: 600; }
-  header .mock { color: var(--warn); font-size: 12px; border: 1px solid var(--warn);
-    padding: 1px 6px; border-radius: 4px; }
   header .cfg { color: var(--muted); font-size: 12px; margin-left: auto; }
   .wrap { display: grid; grid-template-columns: 1.1fr 1fr; gap: 16px; padding: 16px 20px; }
   @media (max-width: 880px) { .wrap { grid-template-columns: 1fr; } }
@@ -103,21 +101,27 @@
 
   footer ul { margin: 6px 0 0; padding-left: 18px; }
   footer li { margin-bottom: 4px; }
+
+  .macro-wrap { padding: 16px 20px; }
+  .tv-chart-container { height: 480px; }
+  .chart-note { color: var(--muted); font-size: 11px; margin-top: 8px; }
+  table.macro td:first-child { color: var(--muted); }
+  table.macro td:last-child .pct-pill { font-size: 13px; }
 </style>
 </head>
 <body>
 <header>
-  <h1>AAL Wheel Advisor</h1>
-  <span class="mock" id="src">MOCK DATA</span>
+  <h1>Stock Trading Automation</h1>
   <span class="cfg">rules: {{ config_label }} &middot; refresh 6s</span>
 </header>
 
 <nav class="tabs">
-  <button class="tab active" data-tab="wheel">AAL Wheel</button>
+  <button class="tab active" data-tab="macro">Macro</button>
   <button class="tab" data-tab="scanner">Premium Scanner</button>
+  <button class="tab" data-tab="wheel">AAL Wheel</button>
 </nav>
 
-<div id="tab-wheel" class="tabpanel">
+<div id="tab-wheel" class="tabpanel" hidden>
   <div class="wrap">
     <section class="panel">
       <div><span class="price" id="price">--</span><span class="chg" id="chg"></span></div>
@@ -229,6 +233,56 @@
   </div>
 </div>
 
+<div id="tab-macro" class="tabpanel">
+  <div class="macro-wrap">
+    <div class="wrap">
+      <section class="panel">
+        <h2>QQQ &middot; price, 50 &amp; 200-day averages</h2>
+        <div class="tv-chart-container"><div id="tvChart" style="height:100%"></div></div>
+        <div class="chart-note">Chart and both moving-average lines are rendered live by
+          TradingView -- not computed by this app.</div>
+      </section>
+
+      <section class="panel">
+        <h2>Macro snapshot</h2>
+        <table class="params macro" id="macroTable">
+          <tbody><tr><td colspan="2" style="color:var(--muted)">loading ...</td></tr></tbody>
+        </table>
+        <div class="asof" id="macroAsOf"></div>
+      </section>
+    </div>
+    <footer>
+      <ul>
+        <li><b>50 DMA / 200 DMA</b> come straight from Yahoo's own
+          <code>fiftyDayAverage</code>/<code>twoHundredDayAverage</code> fields -- fetched, not
+          recomputed here. The chart's moving-average lines are TradingView's own rendering of the
+          same idea; the two can differ slightly (different providers, different adjusted-close/
+          timing conventions), so treat small mismatches between the chart and the table as normal.</li>
+        <li><b>QQQ return (6M)</b>, <b>Price/200DMA</b>, and <b>50DMA/200DMA</b>: colored
+          <span class="pct-pill pct-hi">green</span> above the 0/1 threshold,
+          <span class="pct-pill pct-lo">red</span> below, <span class="pct-pill pct-mid">amber</span>
+          exactly at it.</li>
+        <li><b>ADX(14)</b> has no free, no-signup data source (Alpha Vantage/Twelve Data both gate
+          it behind an API key), so it's computed here via standard Wilder's-smoothing (same
+          convention as this dashboard's existing RSI). Colored
+          <span class="pct-pill pct-lo">red</span> &lt;20 (no trend),
+          <span class="pct-pill pct-hi">green</span> &gt;25 (trending), amber between.</li>
+        <li><b>VIX</b> is shown uncolored (context only). <b>VIX/VIX3M</b> is colored
+          <span class="pct-pill pct-hi">green</span> &gt;1 (near-term vol elevated vs. 3-month --
+          backwardation), <span class="pct-pill pct-lo">red</span> otherwise (normal contango).</li>
+        <li><b>Nasdaq-100 breadth</b> = % of the index's ~100 members trading above their own
+          200-day SMA (constituent list from Wikipedia, refreshed weekly; membership rarely
+          changes). Like ADX, computed here -- no free source exposes ~100 stocks' 200DMAs at
+          once without ~100 separate API calls. Colored
+          <span class="pct-pill pct-hi">green</span> &gt;60%,
+          <span class="pct-pill pct-lo">red</span> &lt;40%, amber between.</li>
+        <li>Everything on this tab refreshes in the background every 30 minutes. Not investment
+          advice.</li>
+      </ul>
+    </footer>
+  </div>
+</div>
+
 <script>
 const F = (x, d = 2) => (x === null || x === undefined || Number.isNaN(x)) ? "-" : Number(x).toFixed(d);
 const PCT = x => (x === null || x === undefined || Number.isNaN(x)) ? "-" : (100 * x).toFixed(0) + "%";
@@ -296,8 +350,6 @@ async function refresh() {
     showError("Fetch failed: " + e.message);
     return;
   }
-  document.getElementById("src").textContent =
-    a.data_source === "mock" ? "MOCK DATA" : a.data_source.toUpperCase();
   document.getElementById("price").textContent = "$" + F(a.spot);
   const chg = document.getElementById("chg");
   chg.textContent = (a.change_pct >= 0 ? "+" : "") + F(a.change_pct) + "%";
@@ -330,13 +382,14 @@ setInterval(refresh, 6000);
 setInterval(drawSpark, 60000);
 
 // -- tabs -------------------------------------------------------------
+const TAB_IDS = ["macro", "scanner", "wheel"];
 document.querySelectorAll("nav.tabs button").forEach(btn => {
   btn.addEventListener("click", () => {
     document.querySelectorAll("nav.tabs button").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
-    document.getElementById("tab-wheel").hidden = btn.dataset.tab !== "wheel";
-    document.getElementById("tab-scanner").hidden = btn.dataset.tab !== "scanner";
+    TAB_IDS.forEach(id => { document.getElementById("tab-" + id).hidden = btn.dataset.tab !== id; });
     if (btn.dataset.tab === "scanner") refreshScan();
+    if (btn.dataset.tab === "macro") initMacroChart();
   });
 });
 
@@ -603,6 +656,102 @@ async function refreshScan() {
 
 refreshScan();
 setInterval(refreshScan, 15000);
+
+// -- macro tab ------------------------------------------------------------
+// The chart is a live TradingView "Advanced Chart" embed (their own free,
+// no-key widget) -- it fetches QQQ's price history and renders the 50/200
+// SMA lines entirely on TradingView's side, per this tab's "fetch, don't
+// compute" requirement. Created lazily on first visit to this tab (it needs
+// a laid-out, visible container to size itself into, and there's no reason
+// to load a third-party script before the user ever looks at this tab).
+let macroChartInited = false;
+function initMacroChart() {
+  if (macroChartInited) return;
+  macroChartInited = true;
+  const s = document.createElement("script");
+  s.src = "https://s3.tradingview.com/tv.js";
+  s.onload = () => {
+    new TradingView.widget({
+      autosize: true,
+      symbol: "NASDAQ:QQQ",
+      interval: "D",
+      timezone: "Etc/UTC",
+      theme: "dark",
+      style: "1",
+      locale: "en",
+      toolbar_bg: "#171a21",
+      enable_publishing: false,
+      hide_legend: false,
+      studies: [
+        { id: "MASimple@tv-basicstudies", inputs: { length: 50 } },
+        { id: "MASimple@tv-basicstudies", inputs: { length: 200 } },
+      ],
+      container_id: "tvChart",
+    });
+  };
+  document.body.appendChild(s);
+}
+
+/** Green above `boundary`, red below, amber exactly at it (the "QQQ return",
+ * "Price/200DMA", "50DMA/200DMA" rows all use this, with boundary 0 or 1). */
+function macroThresholdCell(value, boundary, fmt) {
+  if (value === null || value === undefined || Number.isNaN(value)) return `<td>&ndash;</td>`;
+  const cls = value > boundary ? "pct-hi" : value < boundary ? "pct-lo" : "pct-mid";
+  return `<td><span class="pct-pill ${cls}">${fmt(value)}</span></td>`;
+}
+
+/** ADX(14): red <20 (no trend), green >25 (trending), amber between. */
+function macroAdxCell(adx) {
+  if (adx === null || adx === undefined) return `<td>&ndash;</td>`;
+  const cls = adx < 20 ? "pct-lo" : adx > 25 ? "pct-hi" : "pct-mid";
+  return `<td><span class="pct-pill ${cls}">${adx.toFixed(1)}</span></td>`;
+}
+
+/** VIX/VIX3M: green >1 (backwardation), red otherwise -- no amber band,
+ * per the explicit ask (unlike every other colored row on this tab). */
+function macroVixRatioCell(ratio) {
+  if (ratio === null || ratio === undefined) return `<td>&ndash;</td>`;
+  const cls = ratio > 1 ? "pct-hi" : "pct-lo";
+  return `<td><span class="pct-pill ${cls}">${ratio.toFixed(2)}x</span></td>`;
+}
+
+/** Market breadth (% of Nasdaq-100 above its own 200DMA): green >60%,
+ * red <40%, amber between. */
+function macroBreadthCell(breadth) {
+  if (breadth === null || breadth === undefined) return `<td>&ndash;</td>`;
+  const cls = breadth > 0.6 ? "pct-hi" : breadth < 0.4 ? "pct-lo" : "pct-mid";
+  return `<td><span class="pct-pill ${cls}">${PCT(breadth)}</span></td>`;
+}
+
+async function refreshMacro() {
+  let d;
+  try {
+    d = await (await fetch("/api/macro", { cache: "no-store" })).json();
+  } catch (e) {
+    document.getElementById("macroAsOf").textContent = "cannot reach the advisor: " + e.message;
+    return;
+  }
+  const s = d.signals || {};
+  const dash = v => v === null || v === undefined ? "&ndash;" : v;
+  document.getElementById("macroTable").innerHTML = `
+    <tr><td>QQQ price</td><td>${dash(s.qqq_price != null ? "$" + F(s.qqq_price) : null)}</td></tr>
+    <tr><td>50 DMA</td><td>${dash(s.fifty_dma != null ? "$" + F(s.fifty_dma) : null)}</td></tr>
+    <tr><td>200 DMA</td><td>${dash(s.two_hundred_dma != null ? "$" + F(s.two_hundred_dma) : null)}</td></tr>
+    <tr><td>QQQ return (6M)</td>${macroThresholdCell(s.qqq_return_6m, 0, PCT)}</tr>
+    <tr><td>Price / 200 DMA</td>${macroThresholdCell(s.price_over_two_hundred, 1, x => x.toFixed(3) + "x")}</tr>
+    <tr><td>50 DMA / 200 DMA</td>${macroThresholdCell(s.fifty_over_two_hundred, 1, x => x.toFixed(3) + "x")}</tr>
+    <tr><td>ADX (14)</td>${macroAdxCell(s.adx_14)}</tr>
+    <tr><td>VIX</td><td>${dash(s.vix != null ? F(s.vix) : null)}</td></tr>
+    <tr><td>VIX / VIX3M</td>${macroVixRatioCell(s.vix_over_vix3m)}</tr>
+    <tr><td>Nasdaq-100 breadth</td>${macroBreadthCell(s.nasdaq100_breadth)}</tr>
+  `;
+  document.getElementById("macroAsOf").textContent =
+    d.as_of ? "as of " + new Date(d.as_of).toLocaleString() : "not computed yet -- check back shortly";
+}
+
+initMacroChart();   // Macro is the default active tab now, unlike when this was written
+refreshMacro();
+setInterval(refreshMacro, 60000);
 </script>
 </body>
 </html>
