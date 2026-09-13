@@ -454,14 +454,15 @@ function sortRows(rows, key, dir) {
  * bid (cc_live/csp_live === false); nothing for a live quote or a missing one. */
 const closePx = live => live === false ? ' <span class="close-px" title="Market closed -- this is the last trade price, not a live bid">c</span>' : '';
 
-/** Symbol cell linking out to that ticker's Yahoo Finance chart, new tab.
- * (Yahoo's chart page supports pre-loading indicators like Bollinger Bands
- * via an undocumented URL-encoded state blob, but it's an internal,
- * unstable format -- tested directly and even a faithful reconstruction of
- * a captured state failed to load reliably, so this links plainly rather
- * than risk a broken deep link across hundreds of symbols.) */
+/** Symbol cell linking out to that ticker's Yahoo Finance quote/chart page,
+ * new tab. Deliberately /quote/{sym}/chart/, not the standalone /chart/{sym}
+ * tool -- the latter forced a sign-in wall in testing; this one didn't.
+ * (Also: pre-loading indicators like Bollinger Bands needs an undocumented
+ * URL-encoded state blob -- tested directly, even a faithful reconstruction
+ * of a captured real one failed to load, so this links plainly rather than
+ * risk a broken deep link across hundreds of symbols.) */
 const symbolLink = sym =>
-  `<a class="sym-link" href="https://finance.yahoo.com/chart/${encodeURIComponent(sym)}" target="_blank" rel="noopener noreferrer">${sym}</a>`;
+  `<a class="sym-link" href="https://finance.yahoo.com/quote/${encodeURIComponent(sym)}/chart/" target="_blank" rel="noopener noreferrer">${sym}</a>`;
 
 /** One <td> for a 0-1 percentile: a colored pill, green/red/amber by band
  * (>=hi / <=lo / between; default quartiles, pass 0.33/0.67 for tertiles);
