@@ -98,6 +98,8 @@
   .pct-lo { background: rgba(248,81,73,.18); color: var(--down); }   /* low band (red) */
   .pct-mid { background: rgba(210,153,34,.18); color: var(--warn); } /* middle band (amber) */
   .pct-blue { background: rgba(88,166,255,.18); color: var(--accent); } /* extreme band (IV/RV only) */
+  .sym-link { color: var(--text); text-decoration: none; }
+  .sym-link:hover { color: var(--accent); text-decoration: underline; }
 
   footer ul { margin: 6px 0 0; padding-left: 18px; }
   footer li { margin-bottom: 4px; }
@@ -165,13 +167,14 @@
         <input type="number" id="fPrice" min="0" step="10" value="500">
       </div>
       <button class="resetbtn" id="fReset">Reset to defaults</button>
+      <button class="resetbtn" id="fClear">Clear filters</button>
       <span class="count" id="scanCount"></span>
     </div>
 
     <div style="overflow-x:auto">
       <table class="scan">
         <thead><tr id="scanHead"></tr></thead>
-        <tbody id="scanBody"><tr><td colspan="16" style="color:var(--muted)">loading ...</td></tr></tbody>
+        <tbody id="scanBody"><tr><td colspan="15" style="color:var(--muted)">loading ...</td></tr></tbody>
       </table>
     </div>
     <footer>
@@ -341,14 +344,13 @@ const SCAN_COLUMNS = [
   { key: "iv_rv_ratio",                label: "IV/RV" },
   { key: "iv_rv_pct",                  label: "IV/RV %ile" },
   { key: "expiration",                 label: "Expiry" },
-  { key: "dte",                        label: "DTE" },
   { key: "atm_strike",                 label: "ATM strike" },
-  { key: "cc_premium",                 label: "CC prem" },
-  { key: "cc_reward_pct",              label: "CC reward%" },
-  { key: "cc_reward_pct_annualized",   label: "CC reward% (ann.)" },
-  { key: "csp_premium",                label: "CSP prem" },
-  { key: "csp_reward_pct",             label: "CSP reward%" },
-  { key: "csp_reward_pct_annualized",  label: "CSP reward% (ann.)" },
+  { key: "cc_premium",                 label: "CC" },
+  { key: "cc_reward_pct",              label: "CC%" },
+  { key: "cc_reward_pct_annualized",   label: "CC% (ann.)" },
+  { key: "csp_premium",                label: "CSP" },
+  { key: "csp_reward_pct",             label: "CSP%" },
+  { key: "csp_reward_pct_annualized",  label: "CSP% (ann.)" },
 ];
 
 let scanSortKey = "cc_reward_pct_annualized";
@@ -388,6 +390,13 @@ document.getElementById("fReset").addEventListener("click", () => {
   document.getElementById("fSpread").value = 0.10;
   document.getElementById("fOi").value = 1000;
   document.getElementById("fPrice").value = 500;
+  if (lastScan) renderScanTable(lastScan);
+});
+
+document.getElementById("fClear").addEventListener("click", () => {
+  // Blank inputs fall through to currentFilters()'s permissive defaults
+  // (0-100 / no spread cap / no OI minimum / no price cap) -- shows everything.
+  ["fIvMin", "fIvMax", "fSpread", "fOi", "fPrice"].forEach(id => document.getElementById(id).value = "");
   if (lastScan) renderScanTable(lastScan);
 });
 
@@ -444,6 +453,16 @@ function sortRows(rows, key, dir) {
 /** Superscript "c" marking a premium as a closing price rather than a live
  * bid (cc_live/csp_live === false); nothing for a live quote or a missing one. */
 const closePx = live => live === false ? ' <span class="close-px" title="Market closed -- this is the last trade price, not a live bid">c</span>' : '';
+
+/** Symbol cell linking out to that ticker's Yahoo Finance quote/chart page,
+ * new tab. Deliberately /quote/{sym}/chart/, not the standalone /chart/{sym}
+ * tool -- the latter forced a sign-in wall in testing; this one didn't.
+ * (Also: pre-loading indicators like Bollinger Bands needs an undocumented
+ * URL-encoded state blob -- tested directly, even a faithful reconstruction
+ * of a captured real one failed to load, so this links plainly rather than
+ * risk a broken deep link across hundreds of symbols.) */
+const symbolLink = sym =>
+  `<a class="sym-link" href="https://finance.yahoo.com/quote/${encodeURIComponent(sym)}/chart/" target="_blank" rel="noopener noreferrer">${sym}</a>`;
 
 /** One <td> for a 0-1 percentile: a colored pill, green/red/amber by band
  * (>=hi / <=lo / between; default quartiles, pass 0.33/0.67 for tertiles);
@@ -509,12 +528,12 @@ function renderScanTable(data) {
   document.getElementById("scanBody").innerHTML = top.length ? top.map((r, i) => {
     const p = passInfo.get(r.symbol);
     return `<tr>
-      <td>${i + 1}</td><td>${r.symbol}</td><td>$${F(r.spot)}</td>
+      <td>${i + 1}</td><td>${symbolLink(r.symbol)}</td><td>$${F(r.spot)}</td>
       ${pctCell(r.price_pct)}
       ${pctCell(r.iv_rank_pct, 0.33, 0.67)}
       ${ratioCell(r.iv_rv_ratio)}
       ${pctCell(r.iv_rv_pct, 0.33, 0.67)}
-      <td>${r.expiration}</td><td>${F(r.dte, 0)}</td><td>${F(r.atm_strike)}</td>
+      <td>${r.expiration}</td><td>${F(r.atm_strike)}</td>
       ${legCell(r, "cc", p.cc, "premium")}
       ${legCell(r, "cc", p.cc, "pct", scanSortKey === "cc_reward_pct")}
       ${legCell(r, "cc", p.cc, "ann", scanSortKey === "cc_reward_pct_annualized")}
@@ -522,7 +541,7 @@ function renderScanTable(data) {
       ${legCell(r, "csp", p.csp, "pct", scanSortKey === "csp_reward_pct")}
       ${legCell(r, "csp", p.csp, "ann", scanSortKey === "csp_reward_pct_annualized")}
     </tr>`;
-  }).join("") : `<tr><td colspan="16" style="color:var(--muted)">no stocks match the current filters</td></tr>`;
+  }).join("") : `<tr><td colspan="15" style="color:var(--muted)">no stocks match the current filters</td></tr>`;
 }
 
 /** Polled every 15s (and once right after a manual refresh): fetches
