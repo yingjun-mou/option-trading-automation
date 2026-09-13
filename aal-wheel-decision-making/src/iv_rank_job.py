@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .iv_rank import compute_market_signals
+from .iv_rank import SCHEMA_VERSION, compute_market_signals
 from .realtime import REALTIME_DIR
 from .scanner import load_universe
 
@@ -37,20 +37,28 @@ class IvRankJob:
 
     def _load_cache(self) -> None:
         """Seed `self.signals` from CACHE_FILE if present, so there's something
-        to serve immediately on startup, before the first computation runs."""
+        to serve immediately on startup, before the first computation runs.
+
+        A schema-version mismatch (compute_market_signals()'s return shape
+        changed since this cache was written) still loads `self.signals` as a
+        stale-but-better-than-nothing fallback, but leaves `self.as_of` unset
+        so `_loop()` treats it as needing an immediate recompute rather than
+        waiting up to REFRESH_SECONDS on a cache that merely *looks* recent."""
         if not self.cache_file.exists():
             return
         try:
             raw = json.loads(self.cache_file.read_text())
-            self.as_of = raw.get("as_of")
             self.signals = raw.get("signals", {})
+            if raw.get("schema_version") == SCHEMA_VERSION:
+                self.as_of = raw.get("as_of")
         except Exception:
             pass
 
     def _write_cache(self) -> None:
         """Persist the current signals so a restart can reuse them (see `_load_cache`)."""
         self.cache_file.parent.mkdir(parents=True, exist_ok=True)
-        self.cache_file.write_text(json.dumps({"as_of": self.as_of, "signals": self.signals}))
+        self.cache_file.write_text(json.dumps(
+            {"schema_version": SCHEMA_VERSION, "as_of": self.as_of, "signals": self.signals}))
 
     def _cache_age_seconds(self) -> float | None:
         """Seconds since the cached ranks were computed, or None if there aren't any yet."""

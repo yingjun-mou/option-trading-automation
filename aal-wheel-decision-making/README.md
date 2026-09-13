@@ -115,28 +115,49 @@ AAL wheel rules:
 - **IV Rank is a proxy**: true IV Rank needs a 1-year history of the *options
   market's own* implied vol, which no free source provides for an 850-stock
   universe. `src/iv_rank.py` instead computes the percentile rank of trailing
-  20-day realized volatility within its own 1-year range -- a reasonable "is
+  30-day realized volatility within its own 1-year range -- a reasonable "is
   this name in an elevated-vol regime" signal, but it can diverge from real IV
   Rank, especially around known upcoming events (IV prices those in ahead of
-  time; realized vol obviously can't yet). The same function also returns each
-  symbol's trailing ~3-month closes (`recent_closes`), used for the Price
-  %ile column above -- one batched `yf.download` per symbol feeds both
-  signals rather than fetching history twice. Refreshed on its own ~daily
-  cadence (`src/iv_rank_job.py`, `IvRankJob`, `realtime_data/iv_rank_cache.json`)
-  since both barely move within a day and every extra Yahoo call is extra
-  rate-limit risk -- decoupled from the option scan's ~15-min cycle on purpose.
+  time; realized vol obviously can't yet). The 30-day window (not the more
+  common 20) is a deliberate match to the scanner's own 25-45 DTE option
+  window -- see the IV/RV column below, which is the main reason this window
+  matters. The same function also returns each symbol's trailing ~3-month
+  closes (`recent_closes`) and raw trailing 30-day realized vol (`rv_30`) --
+  one batched `yf.download` per symbol feeds all three signals rather than
+  fetching history three times. Refreshed on
+  its own ~daily cadence (`src/iv_rank_job.py`, `IvRankJob`,
+  `realtime_data/iv_rank_cache.json`) since none of them move much within a
+  day and every extra Yahoo call is extra rate-limit risk -- decoupled from
+  the option scan's cadence (see "Refresh" below) on purpose. Unlike the
+  option scan, this one still runs on its own timer; it's a single
+  lightweight `yf.download` batch, not 800+ sequential ticker fetches, so an
+  unattended timer is a much smaller rate-limit bet.
+- **IV/RV column**: this expiry's ATM implied vol (average of the call and
+  put legs' `impliedVolatility`, which can differ slightly due to skew) over
+  `rv_30`. >1x means the market is pricing more movement than has actually
+  happened lately -- a classic "is premium rich" read, but still a rough one
+  even with the 30-day/25-45-DTE tenor match: it's a fixed trailing window,
+  not a forecast of realized vol over the option's own remaining life.
+  Deliberately not color-coded like the percentile columns -- this one calls
+  for judgment, not a threshold. Also floors out `impliedVolatility` below 1% as an
+  unreliable placeholder (same failure mode as the stale-`lastPrice` bug:
+  seen live on a thin contract reporting IV=0.0016%, obviously not real).
 - **Data source**: live yfinance quotes/chains (~15-20min delayed, free, no
   auth). Yahoo's unofficial endpoint rate-limits hard (HTTP 429) well before any
   useful concurrency, so `src/scanner.py` scans **sequentially** with a fixed
   gap between tickers (`REQUEST_GAP`) -- do not reintroduce concurrency without
   re-verifying against the rate limit.
-- **Refresh**: `src/scanner_job.py` runs a full scan in a background thread on
-  dashboard startup (skipped if the on-disk cache is still fresh), then every
-  `REFRESH_SECONDS`, writing `realtime_data/scanner_cache.json`. `/api/scan`
-  serves the cache instantly; `/api/scan/refresh` (the dashboard's "Refresh
-  now" button) wakes the loop early. It also merges in the latest `iv_rank_pct`
-  per symbol from `IvRankJob` (injected as `iv_rank_provider`, so this module
-  doesn't need to know that job's cadence or cache format).
+- **Refresh is manual, not on a timer**: `src/scanner_job.py` runs one scan in
+  a background thread on a cold start (no cache on disk yet, so there's
+  something to show), then does nothing further until `/api/scan/refresh`
+  (the dashboard's "Refresh now" button) wakes it. Deliberately not on an
+  automatic cadence -- 800+ tickers against a rate-limited free API isn't
+  something to fire unattended on a timer; a human decides when a rescan is
+  worth the ~8-9 minutes and the rate-limit exposure. `/api/scan` always
+  serves whatever is cached, updated or not. Each scan also merges in the
+  latest `iv_rank_pct` + a live `price_pct` per symbol from `IvRankJob`
+  (injected as `iv_rank_provider`, so this module doesn't need to know that
+  job's cadence or cache format).
 
 ## Strategy legs
 
@@ -171,7 +192,7 @@ or dataclass to the next.
 | `dashboard/app.py` + `templates/index.html` | Flask, two tabs. AAL Wheel: `/api/advice` (polled every 6s) + `/api/history`. Premium Scanner: `/api/scan` (cache, polled every 15s) + `/api/scan/refresh` (manual trigger). |
 | `scanner.py` | Live cross-sectional ATM premium scan (see "Premium scanner" above). `scan_universe(symbols)` -> DataFrame, one row per ticker. |
 | `scanner_job.py` | Background loop that owns the scan cadence, disk cache, and manual-refresh wake-up for the dashboard; merges in `iv_rank_pct` from an injected provider. |
-| `iv_rank.py` | `compute_market_signals(symbols)` -- the realized-vol-percentile proxy for IV Rank plus each symbol's trailing closes (for the scanner's live Price %ile column), both batched via one `yf.download` per symbol. |
+| `iv_rank.py` | `compute_market_signals(symbols)` -- the realized-vol-percentile proxy for IV Rank, each symbol's trailing closes (for the live Price %ile column), and raw `rv_30` (for the IV/RV column), all batched via one `yf.download` per symbol. |
 | `iv_rank_job.py` | Background loop maintaining that proxy on its own slow (~daily) cadence, decoupled from the option scan. |
 | `pricing.py` | Black-Scholes price, greeks, implied-vol solve. |
 | `features.py` | Daily features from `MarketData`: rolling 3Y/1Y price percentile (main signal), realised vol, IV percentile, momentum. |
