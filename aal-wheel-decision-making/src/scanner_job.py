@@ -79,12 +79,13 @@ class ScannerJob:
     API is not something to fire on a timer unattended.
 
     `iv_rank_provider`, if given, is called once per scan to get the current
-    {symbol: {"iv_rank_pct": ..., "rv_30": ..., "recent_closes": [...]}} map
-    (see iv_rank_job.IvRankJob) and merge iv_rank_pct + rv_30 as-is, plus two
-    live-computed columns: price_pct (today's scanned spot ranked against
-    recent_closes) and iv_rv_ratio (today's scanned ATM IV / rv_30) -- kept
-    as an injected callable so this module doesn't need to know that job's
-    refresh cadence or cache format."""
+    {symbol: {"iv_rank_pct": ..., "rv_30": ..., "iv_rv_pct": ...,
+    "recent_closes": [...]}} map (see iv_rank_job.IvRankJob) and merge
+    iv_rank_pct + rv_30 + iv_rv_pct as-is, plus two live-computed columns:
+    price_pct (today's scanned spot ranked against recent_closes) and
+    iv_rv_ratio (today's scanned ATM IV / rv_30) -- kept as an injected
+    callable so this module doesn't need to know that job's refresh cadence
+    or cache format."""
 
     def __init__(self, cache_file: Path = CACHE_FILE, iv_rank_provider=None):
         self.cache_file = cache_file
@@ -138,6 +139,9 @@ class ScannerJob:
                     get = lambda s, key: signals.get(s, {}).get(key)  # noqa: E731
                     ok["iv_rank_pct"] = ok["symbol"].map(lambda s: get(s, "iv_rank_pct"))
                     ok["rv_30"] = ok["symbol"].map(lambda s: get(s, "rv_30"))
+                    # iv_rv_pct needs no live inputs (see iv_rank._iv_rv_percentile) -- passed
+                    # straight through from the slow-cadence signals, unlike price_pct/iv_rv_ratio:
+                    ok["iv_rv_pct"] = ok["symbol"].map(lambda s: get(s, "iv_rv_pct"))
                     ok["price_pct"] = ok.apply(
                         lambda r: _price_percentile(r["spot"], get(r["symbol"], "recent_closes")), axis=1)
                     ok["iv_rv_ratio"] = ok.apply(

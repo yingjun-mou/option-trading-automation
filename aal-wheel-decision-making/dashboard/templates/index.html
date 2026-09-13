@@ -94,9 +94,13 @@
   .close-px { color: var(--muted); font-size: 10px; vertical-align: super; }
   .pct-pill { display: inline-block; min-width: 38px; padding: 2px 6px; border-radius: 4px;
     font-weight: 600; }
-  .pct-hi { background: rgba(63,185,80,.18); color: var(--up); }     /* top quartile: >=75% */
-  .pct-lo { background: rgba(248,81,73,.18); color: var(--down); }   /* bottom quartile: <=25% */
-  .pct-mid { background: rgba(210,153,34,.18); color: var(--warn); } /* everything in between */
+  .pct-hi { background: rgba(63,185,80,.18); color: var(--up); }     /* high band (green) */
+  .pct-lo { background: rgba(248,81,73,.18); color: var(--down); }   /* low band (red) */
+  .pct-mid { background: rgba(210,153,34,.18); color: var(--warn); } /* middle band (amber) */
+  .pct-blue { background: rgba(88,166,255,.18); color: var(--accent); } /* extreme band (IV/RV only) */
+
+  footer ul { margin: 6px 0 0; padding-left: 18px; }
+  footer li { margin-bottom: 4px; }
 </style>
 </head>
 <body>
@@ -167,31 +171,50 @@
     <div style="overflow-x:auto">
       <table class="scan">
         <thead><tr id="scanHead"></tr></thead>
-        <tbody id="scanBody"><tr><td colspan="15" style="color:var(--muted)">loading ...</td></tr></tbody>
+        <tbody id="scanBody"><tr><td colspan="16" style="color:var(--muted)">loading ...</td></tr></tbody>
       </table>
     </div>
-    <footer>ATM premium = live bid at the strike nearest spot, nearest expiry in the 25-45 DTE
-      window (falls back to the last trade price when the market is closed and that trade was
-      within the last few days -- shown as <span class="close-px">c</span>; otherwise the leg
-      shows &ndash;). CC reward% = premium / spot. CSP reward% = premium / strike (= collateral
-      per share). Price %ile = today's live price ranked against its trailing ~3-month daily
-      closes -- <span class="pct-pill pct-hi">green</span> in the top quartile (&ge;75%),
-      <span class="pct-pill pct-lo">red</span> in the bottom quartile (&le;25%), amber in between.
-      IV Rank is a <b>proxy</b>: percentile of trailing 30-day realized volatility
-      within its own 1-year range, not true historical implied vol (Yahoo's free feed has no
-      such series) -- it can diverge from real IV Rank, especially around known upcoming events.
-      IV/RV = this expiry's ATM option implied vol (call/put average) &divide; trailing 30-day
-      realized vol (30 days chosen to roughly match this scanner's own 25-45 DTE window);
-      &gt;1x means the market is pricing in more movement than has actually happened lately.
-      Still treat it as directional, not precise: it's a fixed trailing window, not a forecast
-      of realized vol over the option's own remaining life.
-      Bid-ask-spread and open-interest filters apply per leg: a stock stays listed if either leg
-      qualifies, with the other leg blanked. *Yahoo's openInterest field is frequently 0 even on
-      heavily-traded contracts (confirmed on AAPL/SPY/TSLA across strikes and expirations -- a
-      gap in their free feed, not a market reality), so "min open interest" checks
-      max(open interest, today's volume). Live Yahoo Finance quotes, ~15-20min delayed.
-      Universe: S&amp;P 500 + top 500 Nasdaq-listed by market cap. Suggestions only &mdash; not
-      investment advice.</footer>
+    <footer>
+      <ul>
+        <li><b>ATM premium</b> = live bid at the strike nearest spot, nearest expiry in the
+          25-45 DTE window. Falls back to the last trade price when the market is closed and
+          that trade was within the last few days -- shown as <span class="close-px">c</span>;
+          otherwise the leg shows &ndash;.</li>
+        <li><b>CC reward%</b> = premium / spot. <b>CSP reward%</b> = premium / strike
+          (= collateral per share). Both have an annualized version.</li>
+        <li><b>Price %ile</b> = today's live price ranked against its trailing <b>~3 months</b>
+          of daily closes. <span class="pct-pill pct-hi">green</span> &ge;75th percentile,
+          <span class="pct-pill pct-lo">red</span> &le;25th, amber between.</li>
+        <li><b>IV Rank</b> is a <b>proxy</b>: percentile of trailing <b>30-day realized
+          volatility</b> within its own <b>1-year</b> range -- not true historical implied vol
+          (Yahoo's free feed has no such series), so it can diverge from real IV Rank, especially
+          around known upcoming events. Colored the same as IV/RV %ile below (33rd/67th).</li>
+        <li><b>IV/RV</b> = this expiry's ATM option implied vol (call/put average) &divide;
+          trailing <b>30-day realized vol</b> (30 days chosen to roughly match this scanner's own
+          25-45 DTE window). &gt;1x means the market is pricing in more movement than has
+          actually happened lately. Colored
+          <span class="pct-pill pct-lo">red &lt;0.9x</span>,
+          <span class="pct-pill pct-mid">amber 0.9-1.3x</span>,
+          <span class="pct-pill pct-hi">green 1.3-2.0x</span>,
+          <span class="pct-pill pct-blue">blue &gt;2.0x</span>. Still directional, not precise:
+          it's a fixed trailing window, not a forecast of realized vol over the option's own
+          remaining life.</li>
+        <li><b>IV/RV %ile</b> = where today's IV/RV ratio sits against its own trailing
+          <b>3 months</b>. Also a <b>proxy</b>, and for the same reason as IV Rank -- no free
+          source has 3 months of historical implied vol -- so this holds today's IV constant and
+          ranks against 3 months of realized-vol regimes instead (mathematically, today's IV
+          cancels out of the comparison entirely). Colored
+          <span class="pct-pill pct-lo">red</span> &le;33rd percentile,
+          <span class="pct-pill pct-hi">green</span> &ge;67th, amber between.</li>
+        <li>Bid-ask-spread and open-interest filters apply <b>per leg</b>: a stock stays listed
+          if either leg qualifies, with the other leg blanked. *Yahoo's <code>openInterest</code>
+          field is frequently 0 even on heavily-traded contracts (confirmed on AAPL/SPY/TSLA
+          across strikes and expirations -- a gap in their free feed, not a market reality), so
+          "min open interest" checks <code>max(open interest, today's volume)</code>.</li>
+        <li>Live Yahoo Finance quotes, ~15-20min delayed. Universe: S&amp;P 500 + top 500
+          Nasdaq-listed by market cap. Suggestions only &mdash; not investment advice.</li>
+      </ul>
+    </footer>
   </div>
 </div>
 
@@ -316,6 +339,7 @@ const SCAN_COLUMNS = [
   { key: "price_pct",                  label: "Price %ile" },
   { key: "iv_rank_pct",                label: "IV Rank" },
   { key: "iv_rv_ratio",                label: "IV/RV" },
+  { key: "iv_rv_pct",                  label: "IV/RV %ile" },
   { key: "expiration",                 label: "Expiry" },
   { key: "dte",                        label: "DTE" },
   { key: "atm_strike",                 label: "ATM strike" },
@@ -421,19 +445,32 @@ function sortRows(rows, key, dir) {
  * bid (cc_live/csp_live === false); nothing for a live quote or a missing one. */
 const closePx = live => live === false ? ' <span class="close-px" title="Market closed -- this is the last trade price, not a live bid">c</span>' : '';
 
-/** One <td> for a 0-1 percentile: a colored pill, green/red/amber by
- * quartile (>=75% / <=25% / between); "-" if `pct` isn't computed yet. */
-function pctCell(pct) {
+/** One <td> for a 0-1 percentile: a colored pill, green/red/amber by band
+ * (>=hi / <=lo / between; default quartiles, pass 0.33/0.67 for tertiles);
+ * "-" if `pct` isn't computed yet. */
+function pctCell(pct, lo = 0.25, hi = 0.75) {
   if (pct === null || pct === undefined) return `<td>&ndash;</td>`;
-  const cls = pct >= 0.75 ? "pct-hi" : pct <= 0.25 ? "pct-lo" : "pct-mid";
+  const cls = pct >= hi ? "pct-hi" : pct <= lo ? "pct-lo" : "pct-mid";
   return `<td><span class="pct-pill ${cls}">${PCT(pct)}</span></td>`;
 }
 
-/** ATM IV / trailing 30-day realized vol, e.g. "1.51x"; "-" if either side
- * isn't available yet. Deliberately not color-coded, unlike the percentile
- * columns -- this ratio needs judgment (does the option's actual DTE match
- * what 30-day RV can tell you?), not a threshold. */
-const ratioCell = ratio => `<td>${ratio == null ? "&ndash;" : ratio.toFixed(2) + "x"}</td>`;
+/** Color band for an IV/RV ratio: red <0.9, amber 0.9-1.3, green 1.3-2.0,
+ * blue >2.0 (richer than "green" already covers -- an extra, deliberately
+ * distinct band since >2x is a materially different situation, not just
+ * "more of the same green"). */
+function ivRvClass(ratio) {
+  if (ratio < 0.9) return "pct-lo";
+  if (ratio < 1.3) return "pct-mid";
+  if (ratio < 2.0) return "pct-hi";
+  return "pct-blue";
+}
+
+/** ATM IV / trailing 30-day realized vol, e.g. "1.51x", colored per
+ * ivRvClass; "-" if either side isn't available yet. */
+function ratioCell(ratio) {
+  if (ratio == null) return `<td>&ndash;</td>`;
+  return `<td><span class="pct-pill ${ivRvClass(ratio)}">${ratio.toFixed(2)}x</span></td>`;
+}
 
 /** One <td> for leg `prefix`'s premium ("premium"), reward% ("pct"), or
  * annualized reward% ("ann"); a filtered-out leg (passes=false) renders "-"
@@ -474,8 +511,9 @@ function renderScanTable(data) {
     return `<tr>
       <td>${i + 1}</td><td>${r.symbol}</td><td>$${F(r.spot)}</td>
       ${pctCell(r.price_pct)}
-      <td>${r.iv_rank_pct == null ? "&ndash;" : PCT(r.iv_rank_pct)}</td>
+      ${pctCell(r.iv_rank_pct, 0.33, 0.67)}
       ${ratioCell(r.iv_rv_ratio)}
+      ${pctCell(r.iv_rv_pct, 0.33, 0.67)}
       <td>${r.expiration}</td><td>${F(r.dte, 0)}</td><td>${F(r.atm_strike)}</td>
       ${legCell(r, "cc", p.cc, "premium")}
       ${legCell(r, "cc", p.cc, "pct", scanSortKey === "cc_reward_pct")}
@@ -484,7 +522,7 @@ function renderScanTable(data) {
       ${legCell(r, "csp", p.csp, "pct", scanSortKey === "csp_reward_pct")}
       ${legCell(r, "csp", p.csp, "ann", scanSortKey === "csp_reward_pct_annualized")}
     </tr>`;
-  }).join("") : `<tr><td colspan="15" style="color:var(--muted)">no stocks match the current filters</td></tr>`;
+  }).join("") : `<tr><td colspan="16" style="color:var(--muted)">no stocks match the current filters</td></tr>`;
 }
 
 /** Polled every 15s (and once right after a manual refresh): fetches

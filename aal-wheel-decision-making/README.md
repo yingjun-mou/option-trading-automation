@@ -94,8 +94,10 @@ AAL wheel rules:
     number at all rather than a guess.
   - `call_oi`/`call_volume`/`put_oi`/`put_volume` are the raw open-interest and
     same-day volume, exposed for the dashboard's liquidity filters.
-  - `iv_rank_pct` and `price_pct` are filled in from `src/iv_rank.py` (see
-    below) -- the former a **proxy**, not true IV Rank.
+  - `iv_rank_pct`, `price_pct`, `rv_30`, `iv_rv_ratio`, and `iv_rv_pct` are
+    filled in from `src/iv_rank.py` (see below) -- `iv_rank_pct` and
+    `iv_rv_pct` are both **proxies**, not the true historical-implied-vol
+    signals they stand in for.
 - **Dashboard filters** (client-side, instant, no re-scan needed): IV Rank %
   range (default 30-70), max bid-ask spread $ (default 0.10), min open interest
   (default 1000), max stock price $ (default 500). The spread/OI filters apply
@@ -118,17 +120,26 @@ AAL wheel rules:
   30-day realized volatility within its own 1-year range -- a reasonable "is
   this name in an elevated-vol regime" signal, but it can diverge from real IV
   Rank, especially around known upcoming events (IV prices those in ahead of
-  time; realized vol obviously can't yet). The 30-day window (not the more
+  time; realized vol obviously can't yet). Color-coded in the UI the same as
+  IV/RV %ile below: green &ge;67th percentile, red &le;33rd, amber between.
+  The 30-day window (not the more
   common 20) is a deliberate match to the scanner's own 25-45 DTE option
   window -- see the IV/RV column below, which is the main reason this window
   matters. The same function also returns each symbol's trailing ~3-month
-  closes (`recent_closes`) and raw trailing 30-day realized vol (`rv_30`) --
-  one batched `yf.download` per symbol feeds all three signals rather than
-  fetching history three times. Refreshed on
+  closes (`recent_closes`), raw trailing 30-day realized vol (`rv_30`), and
+  its 3-month percentile (`iv_rv_pct`, see the IV/RV %ile column below) --
+  one batched `yf.download` per symbol feeds all four signals rather than
+  fetching history four times. Refreshed on
   its own ~daily cadence (`src/iv_rank_job.py`, `IvRankJob`,
   `realtime_data/iv_rank_cache.json`) since none of them move much within a
   day and every extra Yahoo call is extra rate-limit risk -- decoupled from
-  the option scan's cadence (see "Refresh" below) on purpose. Unlike the
+  the option scan's cadence (see "Refresh" below) on purpose. The cache file
+  carries a `schema_version` (`iv_rank.SCHEMA_VERSION`, bump on any change to
+  `compute_market_signals()`'s return shape) -- a version mismatch forces a
+  prompt recompute instead of treating a schema-stale but recent-timestamped
+  cache as fresh and waiting out the full refresh interval; hit this for real
+  during development (rv_20->rv_30, then again adding `iv_rv_pct`) before the
+  guard existed. Unlike the
   option scan, this one still runs on its own timer; it's a single
   lightweight `yf.download` batch, not 800+ sequential ticker fetches, so an
   unattended timer is a much smaller rate-limit bet.
@@ -137,11 +148,24 @@ AAL wheel rules:
   `rv_30`. >1x means the market is pricing more movement than has actually
   happened lately -- a classic "is premium rich" read, but still a rough one
   even with the 30-day/25-45-DTE tenor match: it's a fixed trailing window,
-  not a forecast of realized vol over the option's own remaining life.
-  Deliberately not color-coded like the percentile columns -- this one calls
-  for judgment, not a threshold. Also floors out `impliedVolatility` below 1% as an
-  unreliable placeholder (same failure mode as the stale-`lastPrice` bug:
-  seen live on a thin contract reporting IV=0.0016%, obviously not real).
+  not a forecast of realized vol over the option's own remaining life. Also
+  floors out `impliedVolatility` below 1% as an unreliable placeholder (same
+  failure mode as the stale-`lastPrice` bug: seen live on a thin contract
+  reporting IV=0.0016%, obviously not real). Color-coded: red below 0.9x,
+  amber 0.9-1.3x, green 1.3-2.0x, blue above 2.0x -- an extra band beyond
+  green since >2x is a materially different situation, not just "more of the
+  same rich."
+- **IV/RV %ile (3mo) column**: where today's IV/RV ratio sits (0-100%)
+  against its own trailing 3 months. A **proxy** for the same reason as IV
+  Rank -- no free source has 3 months of historical implied vol -- computed
+  by `iv_rank._iv_rv_percentile()`, which exploits the fact that
+  ratio(t) = IV_now / RV(t) for a *fixed* IV_now is a strictly decreasing
+  function of RV(t) alone: ranking the ratio over the past 3 months is
+  mathematically identical to *inverse*-ranking `rv_30`'s own 3-month history,
+  so this needs no historical IV at all -- just `rv_30`'s rolling series,
+  already computed for IV Rank. This assumes IV has stayed roughly constant
+  over the window, the same simplification IV Rank makes. Colored the same
+  as IV Rank: green &ge;67th percentile, red &le;33rd, amber between.
 - **Data source**: live yfinance quotes/chains (~15-20min delayed, free, no
   auth). Yahoo's unofficial endpoint rate-limits hard (HTTP 429) well before any
   useful concurrency, so `src/scanner.py` scans **sequentially** with a fixed
@@ -192,7 +216,7 @@ or dataclass to the next.
 | `dashboard/app.py` + `templates/index.html` | Flask, two tabs. AAL Wheel: `/api/advice` (polled every 6s) + `/api/history`. Premium Scanner: `/api/scan` (cache, polled every 15s) + `/api/scan/refresh` (manual trigger). |
 | `scanner.py` | Live cross-sectional ATM premium scan (see "Premium scanner" above). `scan_universe(symbols)` -> DataFrame, one row per ticker. |
 | `scanner_job.py` | Background loop that owns the scan cadence, disk cache, and manual-refresh wake-up for the dashboard; merges in `iv_rank_pct` from an injected provider. |
-| `iv_rank.py` | `compute_market_signals(symbols)` -- the realized-vol-percentile proxy for IV Rank, each symbol's trailing closes (for the live Price %ile column), and raw `rv_30` (for the IV/RV column), all batched via one `yf.download` per symbol. |
+| `iv_rank.py` | `compute_market_signals(symbols)` -- the realized-vol-percentile proxy for IV Rank, each symbol's trailing closes (for the live Price %ile column), raw `rv_30` (for the IV/RV column), and `iv_rv_pct` (that ratio's own 3-month percentile), all batched via one `yf.download` per symbol. Carries `SCHEMA_VERSION` for `IvRankJob`'s cache-invalidation check. |
 | `iv_rank_job.py` | Background loop maintaining that proxy on its own slow (~daily) cadence, decoupled from the option scan. |
 | `pricing.py` | Black-Scholes price, greeks, implied-vol solve. |
 | `features.py` | Daily features from `MarketData`: rolling 3Y/1Y price percentile (main signal), realised vol, IV percentile, momentum. |

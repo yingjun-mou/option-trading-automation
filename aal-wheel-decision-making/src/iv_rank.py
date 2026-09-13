@@ -2,10 +2,13 @@
 together from one batched download per symbol (see `compute_market_signals`):
 the realized-vol-percentile proxy for "IV Rank", the raw 30-day realized vol
 (rv_30) the scanner divides into each option's implied vol for the IV/RV
-column, and a trailing-closes window the scanner turns into a *live* price
-percentile (today's actual spot ranked against recent history, not
-yesterday's close -- see scanner_job.py). All are maintained on their own
-slow cadence by `iv_rank_job.IvRankJob`, decoupled from the option scan."""
+column, that ratio's own trailing-3-month percentile (iv_rv_pct -- see its
+note below for why it's a proxy built entirely from rv_30's history, without
+needing historical IV), and a trailing-closes window the scanner turns into
+a *live* price percentile (today's actual spot ranked against recent
+history, not yesterday's close -- see scanner_job.py). All are maintained on
+their own slow cadence by `iv_rank_job.IvRankJob`, decoupled from the option
+scan."""
 
 from __future__ import annotations
 
@@ -30,7 +33,7 @@ CHUNK_GAP = 1.5
 # to notice. Bit twice already: rv_20->rv_30 (this constant's addition) sat
 # silently stale for what would have been hours, since only the *content*
 # changed, not the timestamp.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _extract_close(data: pd.DataFrame, symbol: str, single: bool) -> pd.Series | None:
@@ -67,16 +70,41 @@ def _realized_vol(close: pd.Series, window: int) -> tuple[pd.Series | None, floa
     return rv, float(rv.iloc[-1])
 
 
+def _iv_rv_percentile(rv_series: pd.Series, rv_30: float, window: int) -> float | None:
+    """Proxy for "where does today's IV/RV ratio sit within its own trailing
+    3-month history" -- without needing 3 months of historical *implied* vol,
+    which (as with IV Rank) no free source provides.
+
+    The trick: ratio(t) = IV_now / RV(t) for a fixed IV_now is a strictly
+    decreasing function of RV(t) alone, so ranking {ratio(t)} over the past
+    `window` days is mathematically identical to *inverse*-ranking {RV(t)}
+    over the same days -- today's IV cancels out of the comparison entirely,
+    whatever it is. So this is really "today's RV percentile within its own
+    trailing 3-month range, flipped" (high recent RV -> low percentile, since
+    a rich RV regime makes the *ratio* look cheaper for a given IV), computed
+    the moment RV's own history is available -- no live IV needed at all.
+
+    This assumes IV has stayed roughly constant over the window, which is
+    the same simplification IV Rank makes; both are proxies for a true
+    historical-IV-based signal this project has no free data source for."""
+    if len(rv_series) < window:
+        return None
+    recent = rv_series.tail(window)
+    return 1.0 - float((recent <= rv_30).mean())
+
+
 def compute_market_signals(symbols: list[str], rv_window: int = RV_WINDOW,
                            price_window: int = PRICE_WINDOW, chunk_size: int = CHUNK_SIZE,
                            chunk_gap: float = CHUNK_GAP) -> dict[str, dict]:
-    """Per symbol: `{"iv_rank_pct": ..., "rv_30": ..., "recent_closes": [...]}`,
-    any key omitted if there isn't enough history for it. `recent_closes` is
-    the trailing `price_window` daily closes -- the scanner combines this
-    with each ticker's live spot to compute a price percentile (see
-    scanner_job.py) rather than freezing it to yesterday's close here.
-    `rv_30` is likewise combined with each ticker's live ATM option IV to
-    compute the IV/RV column.
+    """Per symbol: `{"iv_rank_pct": ..., "rv_30": ..., "iv_rv_pct": ...,
+    "recent_closes": [...]}`, any key omitted if there isn't enough history
+    for it. `recent_closes` is the trailing `price_window` daily closes --
+    the scanner combines this with each ticker's live spot to compute a
+    price percentile (see scanner_job.py) rather than freezing it to
+    yesterday's close here. `rv_30` is likewise combined with each ticker's
+    live ATM option IV to compute the IV/RV column; `iv_rv_pct` is that
+    ratio's own trailing-3-month percentile (see `_iv_rv_percentile` for why
+    it's computable from rv_30's history alone, without live IV).
 
     Batched via yf.download (one/few HTTP calls per chunk) rather than one
     call per ticker -- this runs far less often than the option scan (see
@@ -105,6 +133,9 @@ def compute_market_signals(symbols: list[str], rv_window: int = RV_WINDOW,
                 if rv_series is not None:
                     signals["iv_rank_pct"] = float(rv_series.rank(pct=True).iloc[-1])
                     signals["rv_30"] = rv_30
+                    iv_rv_pct = _iv_rv_percentile(rv_series, rv_30, price_window)
+                    if iv_rv_pct is not None:
+                        signals["iv_rv_pct"] = iv_rv_pct
                 if len(close) >= price_window:
                     signals["recent_closes"] = close.tail(price_window).round(4).tolist()
                 if signals:
