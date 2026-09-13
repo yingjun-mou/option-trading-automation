@@ -50,10 +50,13 @@ parameters, no personal data.
 
 ## Deploying (so you can reach the dashboard from any computer, not just this one)
 
-The dashboard is a normal Flask app; `Procfile` + `render.yaml` here target
-[Render](https://render.com)'s free tier specifically, since that's what this
-project was set up against. Free tier means the instance **spins down after
-~15 min idle** and has **no persistent disk** -- every time you open the
+The dashboard is a normal Flask app; `Procfile` here plus `render.yaml` at
+the **repo root** (one level up -- Render's Blueprint discovery only looks
+there, never in a subdirectory, even though this project lives inside a
+larger repo) target [Render](https://render.com)'s free tier specifically,
+since that's what this project was set up against. Free tier means the
+instance **spins down after ~15 min idle** and has **no persistent disk** --
+every time you open the
 dashboard after a gap, it's a cold start: no cached scan, so it kicks off a
 fresh multi-minute scan against Yahoo before the Premium Scanner tab has
 data (the AAL Wheel tab is unaffected -- its own historical data just

@@ -1,8 +1,14 @@
 # Render Blueprint -- lets you deploy this with Render's "New Blueprint"
-# flow instead of clicking through every field by hand. See README.md's
-# "Deploying" section for the full walkthrough (account setup, connecting
-# the repo, and setting the two secret env vars below, which this file
-# deliberately does NOT fill in).
+# flow instead of clicking through every field by hand. See
+# aal-wheel-decision-making/README.md's "Deploying" section for the full
+# walkthrough (account setup, connecting the repo, and setting the two
+# secret env vars below, which this file deliberately does NOT fill in).
+#
+# This file MUST live at the repo root -- Render's Blueprint discovery only
+# looks here, never in a subdirectory, even though the actual project lives
+# one level down (see rootDir below). Learned this the hard way: an earlier
+# version of this file sat at aal-wheel-decision-making/render.yaml and
+# Render reported "Blueprint file render.yaml not found on master branch."
 services:
   - type: web
     name: aal-wheel-advisor
