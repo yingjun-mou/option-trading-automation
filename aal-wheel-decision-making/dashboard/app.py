@@ -9,6 +9,7 @@ import hmac
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, render_template, request
@@ -73,34 +74,59 @@ def _load_config() -> WheelConfig:
     return WheelConfig(label="DEFAULT")
 
 
-print("dashboard: loading historical feature context ...")
-_market = load_default()
-_hist_features = build_features(_market)
-HIST_CLOSE = _hist_features["close"]
-HIST_IV30 = _hist_features["iv_30"]
-CONFIG = _load_config()
-SOURCE = default_realtime_source()
 IV_RANK = IvRankJob()
 IV_RANK.start()
 SCANNER = ScannerJob(iv_rank_provider=lambda: IV_RANK.signals)
 SCANNER.start()
-print(f"dashboard: config={CONFIG.label}  feed={type(SOURCE).__name__}  ready")
+
+# The AAL Wheel tab's context (historical features + live-quote source) is
+# built lazily, on first use, NOT at import time like the two jobs above.
+# Building it eagerly used to block the module import itself on
+# MockOptions.fetch() regenerating its ~124MB synthetic-options file from
+# scratch (a per-day Black-Scholes loop over ~13 years) whenever
+# historical_data/ is empty -- true on any fresh clone/deploy, since it's
+# gitignored. Confirmed live: this made gunicorn's own app-import validation
+# (which runs before it binds the port) blow past Render's port-scan
+# timeout, failing the deploy outright with "no open ports detected" even
+# though the app itself was fine. The Premium Scanner tab has no dependency
+# on any of this and is unaffected either way.
+_aal_lock = threading.Lock()
+_aal_context = None  # (hist_close, hist_iv30, config, source) once built
+
+
+def _get_aal_context():
+    """Build (and cache) the AAL Wheel tab's context on first call."""
+    global _aal_context
+    with _aal_lock:
+        if _aal_context is None:
+            print("dashboard: loading historical feature context ...")
+            market = load_default()
+            hist_features = build_features(market)
+            config = _load_config()
+            source = default_realtime_source()
+            _aal_context = (hist_features["close"], hist_features["iv_30"], config, source)
+            print(f"dashboard: config={config.label}  feed={type(source).__name__}  ready")
+        return _aal_context
 
 
 def _current_advice():
     """One fresh Advice: live quote + chain -> features -> `advisor.advise()`."""
-    quote = SOURCE.quote()
-    chain_df = SOURCE.option_chain()
-    feats = compute_live_features(HIST_CLOSE, HIST_IV30, quote.price, SOURCE.atm_iv,
+    hist_close, hist_iv30, config, source = _get_aal_context()
+    quote = source.quote()
+    chain_df = source.option_chain()
+    feats = compute_live_features(hist_close, hist_iv30, quote.price, source.atm_iv,
                                   quote.timestamp)
     portfolio = PortfolioState.load(PORTFOLIO_FILE)
-    return advise(CONFIG, portfolio, feats, chain_df, quote)
+    return advise(config, portfolio, feats, chain_df, quote)
 
 
 @app.route("/")
 def index():
-    """The single-page dashboard (both tabs; JS fetches the APIs below)."""
-    return render_template("index.html", config_label=CONFIG.label)
+    """The single-page dashboard (both tabs; JS fetches the APIs below).
+    Doesn't force the AAL context to build -- shows a placeholder label
+    until whichever request gets there first (see _get_aal_context)."""
+    label = _aal_context[2].label if _aal_context is not None else "loading..."
+    return render_template("index.html", config_label=label)
 
 
 @app.route("/api/advice")
@@ -113,7 +139,8 @@ def api_advice():
 @app.route("/api/history")
 def api_history():
     """Recent closes for the AAL Wheel tab's sparkline."""
-    closes = SOURCE.recent_closes(120)
+    _, _, _, source = _get_aal_context()
+    closes = source.recent_closes(120)
     return jsonify(dates=[str(d.date()) for d in closes.index], close=[float(c) for c in closes])
 
 
