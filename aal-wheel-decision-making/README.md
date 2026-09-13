@@ -317,6 +317,39 @@ unrelated to any single stock's option chain:
     instead (same chunked pattern as `iv_rank.compute_market_signals`, just a
     plain rolling-mean SMA). Colored green &gt;60%, red &lt;40%, amber
     between.
+- **Slow score (tier 1)** and **market regime** (`_slow_score`, `_classify_regime`
+  in `src/macro.py`) -- the first tier of a planned 2-tier scoring system:
+  - The score sums four independent +1/-1/0 conditions to a **-4 to +4**
+    total (0 both in a condition's stated neutral zone and when an input is
+    missing): `Price/SMA200` &gt;1.03x (+1) / &lt;0.97x (-1);
+    `SMA50/SMA200` &gt;1.01x (+1) / &lt;0.99x (-1); `Slope_200` &gt;+0.5%
+    (+1) / &lt;-0.5% (-1); `+DI &gt; -DI` (+1) / `+DI &lt; -DI` (-1) (ADX's own
+    two directional components -- whether rising or falling momentum
+    currently dominates, both now returned by `_directional_movement`
+    alongside ADX itself, refactored from the old single-value `_adx`).
+  - This score needs its **own** SMA50/SMA200 rolling calculation, kept
+    deliberately separate from the snapshot table's Yahoo-fetched
+    `fifty_dma`/`two_hundred_dma` above: `Slope_200` needs the 200-day
+    average's value *20 trading days ago*, and Yahoo's `Ticker.info` field
+    only ever has *today's* value -- there's no fetching a historical SMA
+    series without paying for an indicator API, so the whole score (level
+    checks included) uses one internally consistent locally-computed
+    SMA50/SMA200 rather than mixing a fetched "today" number with a
+    computed "20-days-ago" one for the same average.
+  - **Slope_200 direction, flagged explicitly**: implemented as
+    `SMA200(t)/SMA200(t-20) - 1` (positive while the average is rising),
+    not the literal `SMA200(t-20)/SMA200(t) - 1` as originally specified --
+    that version is negative while the average rises and positive while it
+    falls, which would flip the "+1 if Slope_200 &gt; +0.5%" rule backwards
+    relative to the other three bullish-when-true conditions in the same
+    score. Implemented the internally-consistent way; revert `_slope_200`
+    in `src/macro.py` if the literal formula was actually intended.
+  - **Market regime** combines the score with ADX: Strong Bull (score
+    &ge;3, ADX &ge;25), Bull (score &ge;2, ADX &lt;25), Strong Bear (score
+    &le;-3, ADX &ge;25), Bear (score &le;-2, ADX &lt;25), else Sideways --
+    which, per the literal rules, also catches gaps like a +2 score
+    alongside a &ge;25 ADX (strong-trend-confirmed but not a high enough
+    score for either Bull tier), not just genuinely flat readings.
   - Unlike `IvRankJob`'s ~daily cadence, `MacroJob` refreshes every 30
     minutes -- QQQ/VIX/breadth genuinely move during the trading day unlike
     the scanner's slower-moving per-stock signals. Still cheap relative to
@@ -359,7 +392,7 @@ or dataclass to the next.
 | `scanner_job.py` | Background loop that owns the scan cadence, disk cache, and manual-refresh wake-up for the dashboard; merges in `iv_rank_pct` from an injected provider. |
 | `iv_rank.py` | `compute_market_signals(symbols)` -- the realized-vol-percentile proxy for IV Rank, each symbol's trailing closes (for the live Price %ile column), raw `rv_30` (for the IV/RV column), `iv_rv_pct` (that ratio's own 3-month percentile), and `rsi_14`, all batched via one `yf.download` per symbol. `compute_forward_pe(symbols)` -- forward P/E, sequential (no batch endpoint for fundamentals). Carries `SCHEMA_VERSION` for `IvRankJob`'s cache-invalidation check. |
 | `iv_rank_job.py` | Background loop maintaining that proxy on its own slow (~daily) cadence, decoupled from the option scan. |
-| `macro.py` | `compute_macro_signals()` -- QQQ price + Yahoo's own 50/200-day averages, the 6-month return, ADX(14), the VIX/VIX3M term structure, and Nasdaq-100 breadth (ADX and breadth are the two indicators computed here rather than fetched -- see "Macro tab" above). |
+| `macro.py` | `compute_macro_signals()` -- QQQ price + Yahoo's own 50/200-day averages, the 6-month return, ADX(14) + its +DI/-DI, the VIX/VIX3M term structure, Nasdaq-100 breadth, and the tier-1 slow score + market regime classification (ADX/breadth/the slow score's own SMA50/SMA200 are computed here rather than fetched -- see "Macro tab" above). |
 | `macro_job.py` | Background loop refreshing that snapshot every 30 minutes, cached to `realtime_data/macro_cache.json`. |
 | `pricing.py` | Black-Scholes price, greeks, implied-vol solve. |
 | `features.py` | Daily features from `MarketData`: rolling 3Y/1Y price percentile (main signal), realised vol, IV percentile, momentum. |

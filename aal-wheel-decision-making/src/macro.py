@@ -3,19 +3,31 @@ plus the VIX term structure, refreshed on macro_job.MacroJob's own cadence
 (see its docstring).
 
 Per an explicit "fetch, don't compute" ask: the 50/200-day moving averages
-are Yahoo's own already-computed `fiftyDayAverage`/`twoHundredDayAverage`
-fields (read via `Ticker.info`, not recomputed from a rolling window here),
-VIX and VIX3M are plain index closes, and the 6-month return and the two
-DMA ratios are simple arithmetic on those already-fetched numbers. ADX(14)
-and market breadth (% of Nasdaq-100 members above their own 200-day SMA)
-are the two exceptions -- no free, no-signup provider exposes ADX (Alpha
-Vantage/Twelve Data both gate it behind an API key the user declined to set
-up), and a 200DMA-per-stock check across ~100 names has no free per-basket
-source either (see _market_breadth's docstring for why that one isn't just
-~100 Ticker.info calls). Both are computed here from freely-fetched OHLC
-history -- ADX via the same Wilder's-smoothing convention already used by
-this project's RSI implementation (see iv_rank._rsi), breadth via a plain
-rolling-mean SMA."""
+*shown in the snapshot table* are Yahoo's own already-computed
+`fiftyDayAverage`/`twoHundredDayAverage` fields (read via `Ticker.info`, not
+recomputed from a rolling window here), VIX and VIX3M are plain index
+closes, and the 6-month return and the two DMA ratios are simple arithmetic
+on those already-fetched numbers. ADX(14) and market breadth (% of
+Nasdaq-100 members above their own 200-day SMA) are computed here instead --
+no free, no-signup provider exposes ADX (Alpha Vantage/Twelve Data both gate
+it behind an API key the user declined to set up), and a 200DMA-per-stock
+check across ~100 names has no free per-basket source either (see
+_market_breadth's docstring for why that one isn't just ~100 Ticker.info
+calls). Both are computed from freely-fetched OHLC history -- ADX via the
+same Wilder's-smoothing convention already used by this project's RSI
+implementation (see iv_rank._rsi), breadth via a plain rolling-mean SMA.
+
+The tier-1 "slow score" (see `_slow_score`) needs a second, independent
+50/200-day SMA calculation of its own: its `Slope_200` component needs the
+200-day SMA's value *20 trading days ago*, which Yahoo's Ticker.info field
+only ever gives for *today* -- there is no getting a historical SMA series
+without either computing it or paying for an indicator API. So the whole
+slow score (price vs SMA200, SMA50 vs SMA200, slope, +DI/-DI) is computed
+from one internally-consistent rolling SMA calculation over freely-fetched
+OHLC history, deliberately kept separate from the snapshot table's
+Yahoo-fetched fifty_dma/two_hundred_dma above (mixing a fetched "today"
+value with a locally-computed 20-day-old one would make the slope's own
+denominator inconsistent with its numerator)."""
 
 from __future__ import annotations
 
@@ -36,6 +48,20 @@ ADX_WINDOW = 14
 RETURN_LOOKBACK_DAYS = 183   # ~6 calendar months
 HISTORY_PERIOD = "2y"        # trailing bars needed for a stable ADX(14)/200-day SMA + a clean 6-month return
 
+# Tier-1 "slow score": +1/-1 per condition below (0 if in the neutral zone
+# between the two thresholds, or the input is missing), summed to a -4..+4
+# total. Thresholds given explicitly by the user.
+SLOW_SCORE_SMA50_WINDOW = 50
+SLOW_SCORE_SMA200_WINDOW = 200
+SLOW_SCORE_SLOPE_LOOKBACK = 20   # trading days
+PRICE_VS_SMA200_UP = 1.03
+PRICE_VS_SMA200_DOWN = 0.97
+SMA50_VS_SMA200_UP = 1.01
+SMA50_VS_SMA200_DOWN = 0.99
+SLOPE_200_UP = 0.005
+SLOPE_200_DOWN = -0.005
+REGIME_ADX_THRESHOLD = 25
+
 # Breadth = % of Nasdaq-100 members trading above their own 200-day SMA.
 # Wikipedia moved this table at some point from the "Nasdaq-100" article
 # itself to this dedicated page -- note the capitalization, MediaWiki titles
@@ -50,16 +76,21 @@ BREADTH_CHUNK_GAP = 1.5
 
 # Bump whenever compute_macro_signals()'s return shape changes -- same
 # stale-cache guard as iv_rank.SCHEMA_VERSION, see that constant's note.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
-def _adx(high: pd.Series, low: pd.Series, close: pd.Series, n: int = ADX_WINDOW) -> float | None:
-    """Wilder's-smoothing ADX(n), approximated the same way this project's
-    existing RSI does (`.ewm(alpha=1/n, adjust=False)` in place of Wilder's
-    classic simple-average seed) -- a standard, widely-used approximation,
-    not a from-scratch indicator design."""
+def _directional_movement(high: pd.Series, low: pd.Series, close: pd.Series,
+                          n: int = ADX_WINDOW) -> tuple[float | None, float | None, float | None]:
+    """Wilder's-smoothing (adx, plus_di, minus_di) -- ADX(n) plus its two
+    directional components: +DI/-DI say whether rising momentum (+DM) or
+    falling momentum (-DM) currently dominates, which is what the slow
+    score's "+DI>-DI" condition below actually reads. Approximated the same
+    way this project's existing RSI does (`.ewm(alpha=1/n, adjust=False)` in
+    place of Wilder's classic simple-average seed) -- a standard,
+    widely-used approximation, not a from-scratch indicator design.
+    (None, None, None) with too little history."""
     if len(close) < n * 2:
-        return None
+        return None, None, None
     up_move = high.diff()
     down_move = -low.diff()
     plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
@@ -71,11 +102,14 @@ def _adx(high: pd.Series, low: pd.Series, close: pd.Series, n: int = ADX_WINDOW)
     ], axis=1).max(axis=1)
 
     atr = tr.ewm(alpha=1 / n, adjust=False).mean()
-    plus_di = 100 * pd.Series(plus_dm, index=high.index).ewm(alpha=1 / n, adjust=False).mean() / atr
-    minus_di = 100 * pd.Series(minus_dm, index=high.index).ewm(alpha=1 / n, adjust=False).mean() / atr
-    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
+    plus_di_series = 100 * pd.Series(plus_dm, index=high.index).ewm(alpha=1 / n, adjust=False).mean() / atr
+    minus_di_series = 100 * pd.Series(minus_dm, index=high.index).ewm(alpha=1 / n, adjust=False).mean() / atr
+    dx = 100 * (plus_di_series - minus_di_series).abs() / (plus_di_series + minus_di_series)
     adx = dx.ewm(alpha=1 / n, adjust=False).mean().iloc[-1]
-    return float(adx) if pd.notna(adx) else None
+    plus_di, minus_di = plus_di_series.iloc[-1], minus_di_series.iloc[-1]
+    return (float(adx) if pd.notna(adx) else None,
+            float(plus_di) if pd.notna(plus_di) else None,
+            float(minus_di) if pd.notna(minus_di) else None)
 
 
 def _six_month_return(close: pd.Series) -> float | None:
@@ -89,6 +123,80 @@ def _six_month_return(close: pd.Series) -> float | None:
         return None
     start, end = float(past.iloc[-1]), float(close.iloc[-1])
     return (end / start) - 1.0 if start else None
+
+
+def _slope_200(sma200: pd.Series, lookback: int = SLOW_SCORE_SLOPE_LOOKBACK) -> float | None:
+    """SMA200(t)/SMA200(t-lookback) - 1 -- positive when the 200-day average
+    has been rising over the last `lookback` trading days (bullish), negative
+    when falling (bearish).
+
+    NOTE on direction: the request that specified this score wrote the ratio
+    the other way around (SMA200(t-lookback)/SMA200(t) - 1). Taken literally,
+    that version is NEGATIVE while the average is rising and POSITIVE while
+    it's falling -- which would flip the "+1 if Slope_200 > +0.5%" rule
+    backwards relative to the other three bullish conditions in this same
+    score (price above its 200-day average, 50-day above 200-day, +DI>-DI
+    all read bullish-when-true; a slope that's positive during a *decline*
+    would be the odd one out). Implemented here the way that keeps the whole
+    scorecard internally consistent; flagged explicitly rather than silently
+    guessed -- flip this fraction if the literal formula was actually
+    intended."""
+    if len(sma200) < lookback + 1:
+        return None
+    now, past = sma200.iloc[-1], sma200.iloc[-1 - lookback]
+    if pd.isna(now) or pd.isna(past) or not past:
+        return None
+    return float(now / past - 1.0)
+
+
+def _slow_score(price: float | None, sma50: float | None, sma200: float | None,
+                slope_200: float | None, plus_di: float | None,
+                minus_di: float | None) -> tuple[int, dict]:
+    """Tier-1 "slow score": sums four +1/-1/0 conditions to a -4..+4 total.
+    Returns (total, {condition: contribution}) so the UI can show each
+    factor's own contribution, not just the sum. A condition contributes 0
+    both in its stated neutral zone and when an input is missing."""
+    def _bucket(ratio: float | None, up: float, down: float) -> int:
+        if ratio is None:
+            return 0
+        if ratio > up:
+            return 1
+        if ratio < down:
+            return -1
+        return 0
+
+    parts = {
+        "price_vs_sma200": _bucket(price / sma200 if (price and sma200) else None,
+                                   PRICE_VS_SMA200_UP, PRICE_VS_SMA200_DOWN),
+        "sma50_vs_sma200": _bucket(sma50 / sma200 if (sma50 and sma200) else None,
+                                   SMA50_VS_SMA200_UP, SMA50_VS_SMA200_DOWN),
+        "slope_200": _bucket(slope_200, SLOPE_200_UP, SLOPE_200_DOWN),
+        "directional": (0 if plus_di is None or minus_di is None
+                        else (1 if plus_di > minus_di else (-1 if plus_di < minus_di else 0))),
+    }
+    return sum(parts.values()), parts
+
+
+def _classify_regime(slow_score: int | None, adx: float | None) -> str | None:
+    """Strong Bull/Bull/Sideways/Bear/Strong Bear from the slow score + ADX,
+    per the user's explicit table. The four named bands don't overlap (score
+    can't be both >=3 and <=-3; ADX can't be both >=25 and <25), so order
+    doesn't matter among them -- "Sideways" is genuinely everything else,
+    including e.g. a score of +2 alongside a >=25 ADX (a real gap in the
+    literal rules as given: strong-trend-confirmed but the score itself
+    isn't high enough to call it a Strong Bull), not just the "no score"
+    middle ground."""
+    if slow_score is None or adx is None:
+        return None
+    if slow_score >= 3 and adx >= REGIME_ADX_THRESHOLD:
+        return "Strong Bull"
+    if slow_score >= 2 and adx < REGIME_ADX_THRESHOLD:
+        return "Bull"
+    if slow_score <= -3 and adx >= REGIME_ADX_THRESHOLD:
+        return "Strong Bear"
+    if slow_score <= -2 and adx < REGIME_ADX_THRESHOLD:
+        return "Bear"
+    return "Sideways"
 
 
 def _last_close(symbol: str) -> float | None:
@@ -231,9 +339,38 @@ def compute_macro_signals() -> dict:
             if ret_6m is not None:
                 out["qqq_return_6m"] = ret_6m
 
-            adx = _adx(hist["High"], hist["Low"], close)
+            adx, plus_di, minus_di = _directional_movement(hist["High"], hist["Low"], close)
             if adx is not None:
                 out["adx_14"] = adx
+            if plus_di is not None:
+                out["plus_di_14"] = plus_di
+            if minus_di is not None:
+                out["minus_di_14"] = minus_di
+
+            # Slow score's own SMA50/SMA200 -- deliberately separate from
+            # fifty_dma/two_hundred_dma above, see this module's docstring.
+            sma50_series = close.rolling(SLOW_SCORE_SMA50_WINDOW).mean()
+            sma200_series = close.rolling(SLOW_SCORE_SMA200_WINDOW).mean()
+            sma50_calc = sma50_series.iloc[-1] if not sma50_series.empty else None
+            sma200_calc = sma200_series.iloc[-1] if not sma200_series.empty else None
+            sma50_calc = float(sma50_calc) if pd.notna(sma50_calc) else None
+            sma200_calc = float(sma200_calc) if pd.notna(sma200_calc) else None
+            if sma50_calc is not None:
+                out["sma50_calc"] = sma50_calc
+            if sma200_calc is not None:
+                out["sma200_calc"] = sma200_calc
+
+            slope_200 = _slope_200(sma200_series)
+            if slope_200 is not None:
+                out["slope_200"] = slope_200
+
+            slow_score, slow_score_parts = _slow_score(
+                price, sma50_calc, sma200_calc, slope_200, plus_di, minus_di)
+            out["slow_score"] = slow_score
+            out["slow_score_parts"] = slow_score_parts
+            regime = _classify_regime(slow_score, adx)
+            if regime is not None:
+                out["market_regime"] = regime
     except Exception:
         pass
 
