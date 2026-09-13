@@ -43,7 +43,7 @@ RESULT_COLUMNS = [
     "cc_reward_pct", "cc_reward_pct_annualized",
     "csp_reward_pct", "csp_reward_pct_annualized",
     "cc_live", "csp_live",
-    "iv_rank_pct", "price_pct", "rv_30", "iv_rv_ratio", "iv_rv_pct",
+    "iv_rank_pct", "price_pct", "rv_30", "iv_rv_ratio", "iv_rv_pct", "rsi_14", "forward_pe",
     "error",
 ]
 
@@ -194,12 +194,13 @@ def _scan_one(symbol: str, dte_range: tuple[int, int] = DTE_RANGE) -> dict:
                 cc_reward_pct=cc_reward_pct, cc_reward_pct_annualized=cc_reward_pct_ann,
                 csp_reward_pct=csp_reward_pct, csp_reward_pct_annualized=csp_reward_pct_ann,
                 cc_live=cc_live, csp_live=csp_live,
-                # all five filled in by ScannerJob from the (separately cached) IvRankJob
+                # all seven filled in by ScannerJob from the (separately cached) IvRankJob
                 # signals: iv_rank_pct + price_pct as before, plus rv_30 (trailing 30-day
-                # realized vol), iv_rv_ratio = ATM IV (call_iv/put_iv above) / rv_30, and
-                # iv_rv_pct = that ratio's own trailing-3-month percentile -- see
-                # iv_rank.py / scanner_job.py:
+                # realized vol), iv_rv_ratio = ATM IV (call_iv/put_iv above) / rv_30,
+                # iv_rv_pct = that ratio's own trailing-3-month percentile, rsi_14, and
+                # forward_pe -- see iv_rank.py / scanner_job.py:
                 iv_rank_pct=None, price_pct=None, rv_30=None, iv_rv_ratio=None, iv_rv_pct=None,
+                rsi_14=None, forward_pe=None,
                 error=None,
             )
         except Exception as e:  # noqa: BLE001 -- one bad ticker must not sink the scan

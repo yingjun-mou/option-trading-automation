@@ -166,6 +166,24 @@ AAL wheel rules:
   already computed for IV Rank. This assumes IV has stayed roughly constant
   over the window, the same simplification IV Rank makes. Colored the same
   as IV Rank: green &ge;67th percentile, red &le;33rd, amber between.
+- **RSI column**: standard 14-day RSI, same Wilder-smoothing formula as
+  `features._rsi` (duplicated rather than imported -- this live-scanner
+  module tree stays independent of the research/backtest one). Free to
+  compute -- same already-downloaded close series as the signals above, no
+  extra Yahoo call. Colored **inverted** from the percentile columns: red
+  &ge;70 (overbought), green &le;30 (oversold), amber between.
+- **F. PE column**: forward P/E from `Ticker.info["forwardPE"]` (Yahoo's
+  analyst-consensus forward-earnings estimate). Unlike every other IvRankJob
+  signal, this has **no batched fetch** -- each ticker needs its own
+  `Ticker.info` round-trip, verified sequentially-pacable the same way as the
+  option scan (0/140 failures in testing at a 0.3s gap) but adding real time
+  to `IvRankJob`'s own cycle (~8-9 more minutes for the full universe) since
+  there's no `yf.download`-style batch endpoint for fundamentals. Kept off
+  the option scan's cadence entirely for this reason -- seconds of extra
+  latency per ticker times 800+ tickers on a manually-triggered scan the user
+  is actively waiting on would be a worse tradeoff than adding it to the
+  already-infrequent, unattended IvRankJob cycle. Colored inverted like RSI:
+  red &gt;22 (expensive), green &le;15 (cheap), amber between.
 - **Data source**: live yfinance quotes/chains (~15-20min delayed, free, no
   auth). Yahoo's unofficial endpoint rate-limits hard (HTTP 429) well before any
   useful concurrency, so `src/scanner.py` scans **sequentially** with a fixed
@@ -216,7 +234,7 @@ or dataclass to the next.
 | `dashboard/app.py` + `templates/index.html` | Flask, two tabs. AAL Wheel: `/api/advice` (polled every 6s) + `/api/history`. Premium Scanner: `/api/scan` (cache, polled every 15s) + `/api/scan/refresh` (manual trigger). |
 | `scanner.py` | Live cross-sectional ATM premium scan (see "Premium scanner" above). `scan_universe(symbols)` -> DataFrame, one row per ticker. |
 | `scanner_job.py` | Background loop that owns the scan cadence, disk cache, and manual-refresh wake-up for the dashboard; merges in `iv_rank_pct` from an injected provider. |
-| `iv_rank.py` | `compute_market_signals(symbols)` -- the realized-vol-percentile proxy for IV Rank, each symbol's trailing closes (for the live Price %ile column), raw `rv_30` (for the IV/RV column), and `iv_rv_pct` (that ratio's own 3-month percentile), all batched via one `yf.download` per symbol. Carries `SCHEMA_VERSION` for `IvRankJob`'s cache-invalidation check. |
+| `iv_rank.py` | `compute_market_signals(symbols)` -- the realized-vol-percentile proxy for IV Rank, each symbol's trailing closes (for the live Price %ile column), raw `rv_30` (for the IV/RV column), `iv_rv_pct` (that ratio's own 3-month percentile), and `rsi_14`, all batched via one `yf.download` per symbol. `compute_forward_pe(symbols)` -- forward P/E, sequential (no batch endpoint for fundamentals). Carries `SCHEMA_VERSION` for `IvRankJob`'s cache-invalidation check. |
 | `iv_rank_job.py` | Background loop maintaining that proxy on its own slow (~daily) cadence, decoupled from the option scan. |
 | `pricing.py` | Black-Scholes price, greeks, implied-vol solve. |
 | `features.py` | Daily features from `MarketData`: rolling 3Y/1Y price percentile (main signal), realised vol, IV percentile, momentum. |
