@@ -167,7 +167,7 @@
     <div style="overflow-x:auto">
       <table class="scan">
         <thead><tr id="scanHead"></tr></thead>
-        <tbody id="scanBody"><tr><td colspan="14" style="color:var(--muted)">loading ...</td></tr></tbody>
+        <tbody id="scanBody"><tr><td colspan="15" style="color:var(--muted)">loading ...</td></tr></tbody>
       </table>
     </div>
     <footer>ATM premium = live bid at the strike nearest spot, nearest expiry in the 25-45 DTE
@@ -177,9 +177,14 @@
       per share). Price %ile = today's live price ranked against its trailing ~3-month daily
       closes -- <span class="pct-pill pct-hi">green</span> in the top quartile (&ge;75%),
       <span class="pct-pill pct-lo">red</span> in the bottom quartile (&le;25%), amber in between.
-      IV Rank is a <b>proxy</b>: percentile of trailing 20-day realized volatility
+      IV Rank is a <b>proxy</b>: percentile of trailing 30-day realized volatility
       within its own 1-year range, not true historical implied vol (Yahoo's free feed has no
       such series) -- it can diverge from real IV Rank, especially around known upcoming events.
+      IV/RV = this expiry's ATM option implied vol (call/put average) &divide; trailing 30-day
+      realized vol (30 days chosen to roughly match this scanner's own 25-45 DTE window);
+      &gt;1x means the market is pricing in more movement than has actually happened lately.
+      Still treat it as directional, not precise: it's a fixed trailing window, not a forecast
+      of realized vol over the option's own remaining life.
       Bid-ask-spread and open-interest filters apply per leg: a stock stays listed if either leg
       qualifies, with the other leg blanked. *Yahoo's openInterest field is frequently 0 even on
       heavily-traded contracts (confirmed on AAPL/SPY/TSLA across strikes and expirations -- a
@@ -310,6 +315,7 @@ const SCAN_COLUMNS = [
   { key: "spot",                       label: "Spot" },
   { key: "price_pct",                  label: "Price %ile" },
   { key: "iv_rank_pct",                label: "IV Rank" },
+  { key: "iv_rv_ratio",                label: "IV/RV" },
   { key: "expiration",                 label: "Expiry" },
   { key: "dte",                        label: "DTE" },
   { key: "atm_strike",                 label: "ATM strike" },
@@ -423,6 +429,12 @@ function pctCell(pct) {
   return `<td><span class="pct-pill ${cls}">${PCT(pct)}</span></td>`;
 }
 
+/** ATM IV / trailing 30-day realized vol, e.g. "1.51x"; "-" if either side
+ * isn't available yet. Deliberately not color-coded, unlike the percentile
+ * columns -- this ratio needs judgment (does the option's actual DTE match
+ * what 30-day RV can tell you?), not a threshold. */
+const ratioCell = ratio => `<td>${ratio == null ? "&ndash;" : ratio.toFixed(2) + "x"}</td>`;
+
 /** One <td> for leg `prefix`'s premium ("premium"), reward% ("pct"), or
  * annualized reward% ("ann"); a filtered-out leg (passes=false) renders "-"
  * regardless of format. `isRewardCol` highlights the cell matching the
@@ -463,6 +475,7 @@ function renderScanTable(data) {
       <td>${i + 1}</td><td>${r.symbol}</td><td>$${F(r.spot)}</td>
       ${pctCell(r.price_pct)}
       <td>${r.iv_rank_pct == null ? "&ndash;" : PCT(r.iv_rank_pct)}</td>
+      ${ratioCell(r.iv_rv_ratio)}
       <td>${r.expiration}</td><td>${F(r.dte, 0)}</td><td>${F(r.atm_strike)}</td>
       ${legCell(r, "cc", p.cc, "premium")}
       ${legCell(r, "cc", p.cc, "pct", scanSortKey === "cc_reward_pct")}
@@ -471,7 +484,7 @@ function renderScanTable(data) {
       ${legCell(r, "csp", p.csp, "pct", scanSortKey === "csp_reward_pct")}
       ${legCell(r, "csp", p.csp, "ann", scanSortKey === "csp_reward_pct_annualized")}
     </tr>`;
-  }).join("") : `<tr><td colspan="14" style="color:var(--muted)">no stocks match the current filters</td></tr>`;
+  }).join("") : `<tr><td colspan="15" style="color:var(--muted)">no stocks match the current filters</td></tr>`;
 }
 
 /** Polled every 15s (and once right after a manual refresh): fetches

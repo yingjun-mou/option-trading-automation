@@ -37,15 +37,20 @@ RETRY_BACKOFF = 15.0
 
 RESULT_COLUMNS = [
     "symbol", "spot", "expiration", "dte", "atm_strike",
-    "call_bid", "call_ask", "call_oi", "call_volume",
-    "put_bid", "put_ask", "put_oi", "put_volume",
+    "call_bid", "call_ask", "call_oi", "call_volume", "call_iv",
+    "put_bid", "put_ask", "put_oi", "put_volume", "put_iv",
     "cc_premium", "csp_premium",
     "cc_reward_pct", "cc_reward_pct_annualized",
     "csp_reward_pct", "csp_reward_pct_annualized",
     "cc_live", "csp_live",
-    "iv_rank_pct", "price_pct",
+    "iv_rank_pct", "price_pct", "rv_30", "iv_rv_ratio",
     "error",
 ]
+
+# yfinance reports a near-zero placeholder impliedVolatility (seen live: 0.00001)
+# on contracts with no real market -- same failure mode as the stale-lastPrice
+# bug (see _premium). Floor it out rather than let it masquerade as "cheap IV".
+MIN_PLAUSIBLE_IV = 0.01
 
 
 def load_universe(path: Path = UNIVERSE_FILE) -> list[str]:
@@ -119,9 +124,12 @@ def _is_rate_limited(exc: Exception) -> bool:
 
 
 def _leg_quote(row: pd.Series) -> dict:
-    """NaN-safe bid/ask/open-interest/volume for one option leg."""
+    """NaN-safe bid/ask/open-interest/volume/IV for one option leg. `iv` is
+    None (not 0) when missing or implausibly near-zero -- see MIN_PLAUSIBLE_IV."""
+    iv = _safe_num(row.get("impliedVolatility"), float, None)
     return dict(bid=_safe_float(row.get("bid")), ask=_safe_float(row.get("ask")),
-                oi=_safe_int(row.get("openInterest")), volume=_safe_int(row.get("volume")))
+                oi=_safe_int(row.get("openInterest")), volume=_safe_int(row.get("volume")),
+                iv=iv if iv is not None and iv >= MIN_PLAUSIBLE_IV else None)
 
 
 def _reward_pct(premium: float | None, denominator: float,
@@ -178,15 +186,19 @@ def _scan_one(symbol: str, dte_range: tuple[int, int] = DTE_RANGE) -> dict:
                 symbol=symbol, spot=round(spot, 2), expiration=expiration, dte=dte,
                 atm_strike=atm_strike,
                 call_bid=cq["bid"], call_ask=cq["ask"], call_oi=cq["oi"], call_volume=cq["volume"],
+                call_iv=cq["iv"],
                 put_bid=pq["bid"], put_ask=pq["ask"], put_oi=pq["oi"], put_volume=pq["volume"],
+                put_iv=pq["iv"],
                 cc_premium=round(cc_premium, 3) if cc_premium is not None else None,
                 csp_premium=round(csp_premium, 3) if csp_premium is not None else None,
                 cc_reward_pct=cc_reward_pct, cc_reward_pct_annualized=cc_reward_pct_ann,
                 csp_reward_pct=csp_reward_pct, csp_reward_pct_annualized=csp_reward_pct_ann,
                 cc_live=cc_live, csp_live=csp_live,
-                # both filled in by ScannerJob from the (separately cached) IvRankJob signals:
-                iv_rank_pct=None,
-                price_pct=None,  # live spot (above) ranked against recent daily closes
+                # all four filled in by ScannerJob from the (separately cached) IvRankJob
+                # signals: iv_rank_pct + price_pct as before, plus rv_30 (trailing 30-day
+                # realized vol) and iv_rv_ratio = ATM IV (call_iv/put_iv above) / rv_30 --
+                # see iv_rank.py / scanner_job.py:
+                iv_rank_pct=None, price_pct=None, rv_30=None, iv_rv_ratio=None,
                 error=None,
             )
         except Exception as e:  # noqa: BLE001 -- one bad ticker must not sink the scan

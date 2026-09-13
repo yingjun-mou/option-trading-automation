@@ -40,6 +40,23 @@ def _price_percentile(spot: float, recent_closes: list[float] | None) -> float |
     return float((closes <= spot).mean())
 
 
+def _iv_rv_ratio(call_iv: float | None, put_iv: float | None, rv_30: float | None) -> float | None:
+    """ATM implied vol / trailing 30-day realized vol -- how rich the
+    option's IV is versus recent actual movement (>1 = pricier than recent
+    realized; see the chat writeup this was requested from for the caveat:
+    the 30-day window is a deliberate match to the scanner's own 25-45 DTE
+    option window, not an arbitrary choice, but it's still a fixed trailing
+    window, not a forecast of realized vol over the option's own remaining
+    life, so treat it as directional, not precise). ATM IV is the average of
+    the call/put legs' IV where both are available (they can differ slightly
+    due to skew); None if neither leg has a usable IV, or rv_30 isn't
+    available yet."""
+    ivs = [iv for iv in (call_iv, put_iv) if iv is not None]
+    if not ivs or not rv_30:
+        return None
+    return (sum(ivs) / len(ivs)) / rv_30
+
+
 def _json_safe(obj):
     """Recursively replace float NaN with None -- pandas leaves genuinely
     missing numeric fields (e.g. cc_premium with no live/recent quote) as
@@ -62,11 +79,12 @@ class ScannerJob:
     API is not something to fire on a timer unattended.
 
     `iv_rank_provider`, if given, is called once per scan to get the current
-    {symbol: {"iv_rank_pct": ..., "recent_closes": [...]}} map (see
-    iv_rank_job.IvRankJob) and merge iv_rank_pct + a live-computed price_pct
-    (today's scanned spot ranked against recent_closes) into each row --
-    kept as an injected callable so this module doesn't need to know that
-    job's refresh cadence or cache format."""
+    {symbol: {"iv_rank_pct": ..., "rv_30": ..., "recent_closes": [...]}} map
+    (see iv_rank_job.IvRankJob) and merge iv_rank_pct + rv_30 as-is, plus two
+    live-computed columns: price_pct (today's scanned spot ranked against
+    recent_closes) and iv_rv_ratio (today's scanned ATM IV / rv_30) -- kept
+    as an injected callable so this module doesn't need to know that job's
+    refresh cadence or cache format."""
 
     def __init__(self, cache_file: Path = CACHE_FILE, iv_rank_provider=None):
         self.cache_file = cache_file
@@ -101,8 +119,8 @@ class ScannerJob:
         }))
 
     def _run_scan(self) -> None:
-        """Scan the full universe once, merge in IV Rank + price percentile,
-        and cache the result. No-ops if a scan is already running."""
+        """Scan the full universe once, merge in IV Rank + price percentile +
+        IV/RV ratio, and cache the result. No-ops if a scan is already running."""
         with self._lock:
             if self.state.status == "scanning":
                 return
@@ -117,10 +135,13 @@ class ScannerJob:
                 signals = self.iv_rank_provider()
                 if signals:
                     ok = ok.copy()
-                    ok["iv_rank_pct"] = ok["symbol"].map(lambda s: signals.get(s, {}).get("iv_rank_pct"))
+                    get = lambda s, key: signals.get(s, {}).get(key)  # noqa: E731
+                    ok["iv_rank_pct"] = ok["symbol"].map(lambda s: get(s, "iv_rank_pct"))
+                    ok["rv_30"] = ok["symbol"].map(lambda s: get(s, "rv_30"))
                     ok["price_pct"] = ok.apply(
-                        lambda r: _price_percentile(r["spot"], signals.get(r["symbol"], {}).get("recent_closes")),
-                        axis=1)
+                        lambda r: _price_percentile(r["spot"], get(r["symbol"], "recent_closes")), axis=1)
+                    ok["iv_rv_ratio"] = ok.apply(
+                        lambda r: _iv_rv_ratio(r["call_iv"], r["put_iv"], r["rv_30"]), axis=1)
             self.state.rows = _json_safe(ok.to_dict(orient="records"))
             self.state.scanned = len(ok)
             self.state.failed = int(df["error"].notna().sum())
