@@ -9,6 +9,8 @@ realtime_data/**/*.parquet
 realtime_data/mock/portfolio.json
 realtime_data/scanner_cache.json
 realtime_data/iv_rank_cache.json
+realtime_data/macro_cache.json
+realtime_data/nasdaq100_constituents.json
 
 !**/README.md
 !realtime_data/mock/portfolio.example.json

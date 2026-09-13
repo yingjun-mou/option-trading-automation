@@ -21,6 +21,7 @@ from src.advisor import PortfolioState, advise, compute_live_features  # noqa: E
 from src.datasource import load_default  # noqa: E402
 from src.features import build_features  # noqa: E402
 from src.iv_rank_job import IvRankJob  # noqa: E402
+from src.macro_job import MacroJob  # noqa: E402
 from src.realtime import MOCK_DIR, default_realtime_source  # noqa: E402
 from src.scanner_job import ScannerJob  # noqa: E402
 from src.wheel import WheelConfig  # noqa: E402
@@ -78,6 +79,8 @@ IV_RANK = IvRankJob()
 IV_RANK.start()
 SCANNER = ScannerJob(iv_rank_provider=lambda: IV_RANK.signals)
 SCANNER.start()
+MACRO = MacroJob()
+MACRO.start()
 
 # The AAL Wheel tab's context (historical features + live-quote source) is
 # built lazily, on first use, NOT at import time like the two jobs above.
@@ -155,6 +158,12 @@ def api_scan_refresh():
     """The Premium Scanner tab's "Refresh now" button."""
     SCANNER.trigger_refresh()
     return jsonify(triggered=True)
+
+
+@app.route("/api/macro")
+def api_macro():
+    """Polled every 60s by the Macro tab -- MacroJob's cached QQQ/VIX snapshot."""
+    return jsonify(as_of=MACRO.as_of, signals=MACRO.signals)
 
 
 if __name__ == "__main__":

@@ -5,10 +5,13 @@ Two parts:
 1. **Research** -- search AAL's price and options history for the most profitable
    **price-based** options-selling strategy (cash-secured puts, covered calls, or
    the two combined as a Wheel) and check whether it survives out of sample.
-2. **Advisor dashboard** -- feed the same rules a live (currently mock) AAL quote
-   and your current holdings, and get one recommendation: sell a CSP/CC (with the
-   exact strike, expiry, size), wait, buy-to-close, or roll. A second tab scans
-   ~850 liquid US stocks for the richest ATM premium (live Yahoo Finance data).
+2. **Advisor dashboard** ("Stock Trading Automation" in the UI) -- three tabs. **Macro**
+   (opens first): a regime read on QQQ + Nasdaq-100 breadth (trend, ADX, VIX term
+   structure). **Premium Scanner**: ~850 liquid US stocks ranked by richest ATM
+   premium (live Yahoo Finance data). **AAL Wheel**: feed the same research rules a
+   live (currently mock) AAL quote and your current holdings, and get one
+   recommendation -- sell a CSP/CC (with the exact strike, expiry, size), wait,
+   buy-to-close, or roll.
 
 Nothing here trades. It tells you what to do; you execute manually.
 
@@ -71,6 +74,12 @@ every time you open the dashboard after a gap, it's a cold start:
   loop across ~13 years) is too large to commit to git, so a fresh deploy
   regenerates it from scratch. `historical_data/stock_aal.csv` (379KB) *is*
   committed, so at least that half is instant and network-free.
+- **Macro**: `MacroJob` starts fetching QQQ/VIX ~10s after the app comes up
+  (see `src/macro_job.py`'s `STARTUP_DELAY`) -- a few lightweight yfinance
+  calls, nowhere near the AAL Wheel tab's regeneration cost, so this tab is
+  usually populated within a few seconds of a cold start. The chart itself
+  needs no backend data at all (it's a client-side TradingView embed), so it
+  renders immediately regardless.
 
 This was a deliberate choice over paid always-on hosting; see this
 project's chat history if you want to revisit that tradeoff later, or want
@@ -129,7 +138,7 @@ Two independent data layers, each with a mock backend now and a real one later.
 `src/realtime.py` defines the `RealtimeSource` interface (`quote()` +
 `option_chain()`); `default_realtime_source()` picks the backend.
 
-## Premium scanner (dashboard's second tab)
+## Premium scanner (dashboard's second tab, opens after Macro)
 
 Ranks a universe of stocks by ATM option premium richness, independent of the
 AAL wheel rules:
@@ -262,6 +271,59 @@ AAL wheel rules:
   (injected as `iv_rank_provider`, so this module doesn't need to know that
   job's cadence or cache format).
 
+## Macro tab (dashboard's first/default tab)
+
+A regime read on QQQ + the VIX term structure and Nasdaq-100 breadth,
+unrelated to any single stock's option chain:
+
+- **Chart**: QQQ candles with 50- and 200-day SMA lines, via a free,
+  no-signup TradingView "Advanced Chart" embed (`dashboard/templates/index.html`,
+  `initMacroChart()`). The chart and both moving-average lines are rendered
+  entirely by TradingView -- this project fetches nothing for it and computes
+  none of it.
+- **Snapshot table** (`src/macro.py`'s `compute_macro_signals()`, refreshed
+  every 30 min by `src/macro_job.py`'s `MacroJob`, `realtime_data/macro_cache.json`):
+  - `fifty_dma`/`two_hundred_dma` are Yahoo's own already-computed
+    `fiftyDayAverage`/`twoHundredDayAverage` fields (`Ticker.info`) -- fetched,
+    not recomputed here, per an explicit "don't compute the moving averages
+    yourself" requirement. They can differ slightly from the chart's own
+    TradingView-rendered lines (different providers, different
+    adjusted-close/timing conventions) -- that's expected, not a bug.
+  - `qqq_return_6m`, `price_over_two_hundred`, `fifty_over_two_hundred` are
+    plain arithmetic on those already-fetched numbers (a % change and two
+    ratios) -- colored green/red/amber (above/below/exactly at 0 or 1).
+  - `adx_14` is the **one indicator this project computes itself** on this
+    tab: no free, no-signup source exposes ADX (Alpha Vantage and Twelve Data
+    both gate it behind an API key), so it's Wilder's-smoothing ADX(14) over
+    QQQ's own OHLC history, using the same `.ewm(alpha=1/n, adjust=False)`
+    convention already used by this project's RSI (`iv_rank._rsi`). Colored
+    red &lt;20 (no trend), green &gt;25 (trending), amber between.
+  - `vix`/`vix3m` are plain index closes (`^VIX`/`^VIX3M` via yfinance); `vix`
+    is shown uncolored (context only), `vix_over_vix3m` is colored green
+    &gt;1 (near-term vol richer than 3-month -- backwardation, often a
+    stress signal), red otherwise (normal contango).
+  - `nasdaq100_breadth` = % of the Nasdaq-100's ~100 members trading above
+    their own 200-day SMA. Constituent list scraped from Wikipedia's
+    [List of NASDAQ-100 companies](https://en.wikipedia.org/wiki/List_of_NASDAQ-100_companies)
+    (same `requests` + `pd.read_html` pattern as `scripts/build_universe.py`'s
+    S&amp;P 500 fetch; note the capitalization -- the "Nasdaq-100" article
+    itself dropped its constituent table at some point and just hatnotes to
+    this page now) and cached for `NASDAQ100_MAX_AGE_DAYS` (7) since index
+    membership barely changes. Like ADX, this is the **other indicator
+    computed here rather than fetched**: there's no free per-basket "already
+    computed 200DMA" source for ~100 names, and checking each one via
+    `Ticker.info` would be ~100 HTTP round-trips every 30 minutes -- far more
+    Yahoo request volume than the two batched `yf.download` calls this uses
+    instead (same chunked pattern as `iv_rank.compute_market_signals`, just a
+    plain rolling-mean SMA). Colored green &gt;60%, red &lt;40%, amber
+    between.
+  - Unlike `IvRankJob`'s ~daily cadence, `MacroJob` refreshes every 30
+    minutes -- QQQ/VIX/breadth genuinely move during the trading day unlike
+    the scanner's slower-moving per-stock signals. Still cheap relative to
+    the 850-symbol scan: one symbol's history, one `Ticker.info`, two index
+    closes, and ~100 more symbols' history via 2 batched downloads for
+    breadth.
+
 ## Strategy legs
 
 Each side of the Wheel is an independent **leg** with its own price-ladder logic:
@@ -292,11 +354,13 @@ or dataclass to the next.
 | `datasource.py` | Historical data boundary. `StockSource` / `OptionSource` interfaces; `YahooStock`, `CsvStock`, `OratsFolder`, `MockOptions` implement them. `load_market_data(...)` returns a `MarketData`. |
 | `realtime.py` | Live data boundary. `RealtimeSource` interface; `MockRealtime` today, `RobinhoodRealtime` later. Returns a `Quote` and a normalised option-chain DataFrame. |
 | `advisor.py` | Turns the rules + a live quote + your `PortfolioState` into an `Advice`: `compute_live_features()` (the same feature definitions, one latest row) then `advise()`, which dry-runs the legs and reviews open positions to produce ranked `Recommendation`s (ROLL / CLOSE / SELL_CSP / SELL_CC / WAIT). Rolling parameter selection is a TODO. |
-| `dashboard/app.py` + `templates/index.html` | Flask, two tabs. AAL Wheel: `/api/advice` (polled every 6s) + `/api/history`. Premium Scanner: `/api/scan` (cache, polled every 15s) + `/api/scan/refresh` (manual trigger). |
+| `dashboard/app.py` + `templates/index.html` | Flask, three tabs. AAL Wheel: `/api/advice` (polled every 6s) + `/api/history`. Premium Scanner: `/api/scan` (cache, polled every 15s) + `/api/scan/refresh` (manual trigger). Macro: `/api/macro` (cache, polled every 60s). |
 | `scanner.py` | Live cross-sectional ATM premium scan (see "Premium scanner" above). `scan_universe(symbols)` -> DataFrame, one row per ticker. |
 | `scanner_job.py` | Background loop that owns the scan cadence, disk cache, and manual-refresh wake-up for the dashboard; merges in `iv_rank_pct` from an injected provider. |
 | `iv_rank.py` | `compute_market_signals(symbols)` -- the realized-vol-percentile proxy for IV Rank, each symbol's trailing closes (for the live Price %ile column), raw `rv_30` (for the IV/RV column), `iv_rv_pct` (that ratio's own 3-month percentile), and `rsi_14`, all batched via one `yf.download` per symbol. `compute_forward_pe(symbols)` -- forward P/E, sequential (no batch endpoint for fundamentals). Carries `SCHEMA_VERSION` for `IvRankJob`'s cache-invalidation check. |
 | `iv_rank_job.py` | Background loop maintaining that proxy on its own slow (~daily) cadence, decoupled from the option scan. |
+| `macro.py` | `compute_macro_signals()` -- QQQ price + Yahoo's own 50/200-day averages, the 6-month return, ADX(14), the VIX/VIX3M term structure, and Nasdaq-100 breadth (ADX and breadth are the two indicators computed here rather than fetched -- see "Macro tab" above). |
+| `macro_job.py` | Background loop refreshing that snapshot every 30 minutes, cached to `realtime_data/macro_cache.json`. |
 | `pricing.py` | Black-Scholes price, greeks, implied-vol solve. |
 | `features.py` | Daily features from `MarketData`: rolling 3Y/1Y price percentile (main signal), realised vol, IV percentile, momentum. |
 | `csp/`, `cc/` | The two legs. `leg.py` in each holds the ladder function and the `rebalance()` that decides what to sell that day. |
