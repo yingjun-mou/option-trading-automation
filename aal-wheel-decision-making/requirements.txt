@@ -8,5 +8,6 @@ tabulate>=0.9
 yfinance>=0.2.40
 # real-time dashboard
 flask>=3.0
+gunicorn>=22.0   # production WSGI server -- see Procfile, used on Render/similar hosts only
 # only used by scripts/ml_probe.py (optional phase 2)
 scikit-learn>=1.3

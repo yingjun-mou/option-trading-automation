@@ -1,0 +1,24 @@
+# Render Blueprint -- lets you deploy this with Render's "New Blueprint"
+# flow instead of clicking through every field by hand. See README.md's
+# "Deploying" section for the full walkthrough (account setup, connecting
+# the repo, and setting the two secret env vars below, which this file
+# deliberately does NOT fill in).
+services:
+  - type: web
+    name: aal-wheel-advisor
+    runtime: python
+    plan: free
+    rootDir: aal-wheel-decision-making
+    buildCommand: pip install -r requirements.txt
+    # --workers 1 is deliberate, not a typo: ScannerJob/IvRankJob run as
+    # in-process background threads with in-memory state, backed by JSON
+    # files on disk. A second worker process would run its own independent
+    # copies of both -- duplicate, uncoordinated scans hitting Yahoo, and
+    # two processes writing the same cache files. --threads lets the one
+    # worker still serve several concurrent requests.
+    startCommand: gunicorn --worker-class gthread --workers 1 --threads 4 --timeout 90 --bind 0.0.0.0:$PORT dashboard.app:app
+    envVars:
+      - key: DASHBOARD_USER
+        sync: false
+      - key: DASHBOARD_PASSWORD
+        sync: false
