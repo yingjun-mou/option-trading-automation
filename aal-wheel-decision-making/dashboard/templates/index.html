@@ -174,7 +174,7 @@
     <div style="overflow-x:auto">
       <table class="scan">
         <thead><tr id="scanHead"></tr></thead>
-        <tbody id="scanBody"><tr><td colspan="15" style="color:var(--muted)">loading ...</td></tr></tbody>
+        <tbody id="scanBody"><tr><td colspan="17" style="color:var(--muted)">loading ...</td></tr></tbody>
       </table>
     </div>
     <footer>
@@ -209,6 +209,14 @@
           cancels out of the comparison entirely). Colored
           <span class="pct-pill pct-lo">red</span> &le;33rd percentile,
           <span class="pct-pill pct-hi">green</span> &ge;67th, amber between.</li>
+        <li><b>RSI</b> = standard 14-day RSI. Colored
+          <span class="pct-pill pct-lo">red</span> &ge;70 (overbought),
+          <span class="pct-pill pct-hi">green</span> &le;30 (oversold), amber between -- note
+          this is the opposite direction from the percentile columns above (here, high is red).</li>
+        <li><b>F. PE</b> = forward P/E (from Yahoo's analyst consensus forward earnings estimate).
+          Colored <span class="pct-pill pct-lo">red</span> &gt;22,
+          <span class="pct-pill pct-hi">green</span> &le;15, amber between -- also inverted:
+          high P/E (expensive) is red, low (cheap) is green.</li>
         <li>Bid-ask-spread and open-interest filters apply <b>per leg</b>: a stock stays listed
           if either leg qualifies, with the other leg blanked. *Yahoo's <code>openInterest</code>
           field is frequently 0 even on heavily-traded contracts (confirmed on AAPL/SPY/TSLA
@@ -343,6 +351,8 @@ const SCAN_COLUMNS = [
   { key: "iv_rank_pct",                label: "IV Rank" },
   { key: "iv_rv_ratio",                label: "IV/RV" },
   { key: "iv_rv_pct",                  label: "IV/RV %ile" },
+  { key: "rsi_14",                     label: "RSI" },
+  { key: "forward_pe",                 label: "F. PE" },
   { key: "expiration",                 label: "Expiry" },
   { key: "atm_strike",                 label: "ATM strike" },
   { key: "cc_premium",                 label: "CC" },
@@ -491,6 +501,21 @@ function ratioCell(ratio) {
   return `<td><span class="pct-pill ${ivRvClass(ratio)}">${ratio.toFixed(2)}x</span></td>`;
 }
 
+/** RSI(14) and forward P/E cells. Reuse the same three color classes as the
+ * percentile columns (pct-hi=green, pct-lo=red, pct-mid=amber), but note the
+ * mapping is INVERTED here: high RSI (overbought) and high P/E (expensive)
+ * are the red/cautionary end, unlike price percentile where high=green. */
+function rsiCell(rsi) {
+  if (rsi == null) return `<td>&ndash;</td>`;
+  const cls = rsi >= 70 ? "pct-lo" : rsi <= 30 ? "pct-hi" : "pct-mid";
+  return `<td><span class="pct-pill ${cls}">${rsi.toFixed(0)}</span></td>`;
+}
+function peCell(pe) {
+  if (pe == null) return `<td>&ndash;</td>`;
+  const cls = pe > 22 ? "pct-lo" : pe <= 15 ? "pct-hi" : "pct-mid";
+  return `<td><span class="pct-pill ${cls}">${pe.toFixed(1)}</span></td>`;
+}
+
 /** One <td> for leg `prefix`'s premium ("premium"), reward% ("pct"), or
  * annualized reward% ("ann"); a filtered-out leg (passes=false) renders "-"
  * regardless of format. `isRewardCol` highlights the cell matching the
@@ -533,6 +558,8 @@ function renderScanTable(data) {
       ${pctCell(r.iv_rank_pct, 0.33, 0.67)}
       ${ratioCell(r.iv_rv_ratio)}
       ${pctCell(r.iv_rv_pct, 0.33, 0.67)}
+      ${rsiCell(r.rsi_14)}
+      ${peCell(r.forward_pe)}
       <td>${r.expiration}</td><td>${F(r.atm_strike)}</td>
       ${legCell(r, "cc", p.cc, "premium")}
       ${legCell(r, "cc", p.cc, "pct", scanSortKey === "cc_reward_pct")}
@@ -541,7 +568,7 @@ function renderScanTable(data) {
       ${legCell(r, "csp", p.csp, "pct", scanSortKey === "csp_reward_pct")}
       ${legCell(r, "csp", p.csp, "ann", scanSortKey === "csp_reward_pct_annualized")}
     </tr>`;
-  }).join("") : `<tr><td colspan="15" style="color:var(--muted)">no stocks match the current filters</td></tr>`;
+  }).join("") : `<tr><td colspan="17" style="color:var(--muted)">no stocks match the current filters</td></tr>`;
 }
 
 /** Polled every 15s (and once right after a manual refresh): fetches

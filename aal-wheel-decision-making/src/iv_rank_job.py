@@ -1,5 +1,6 @@
-"""Background loop that keeps `iv_rank.compute_market_signals()` fresh on its
-own slow (~daily) cadence and caches it to disk -- see IvRankJob's docstring."""
+"""Background loop that keeps `iv_rank.compute_market_signals()` +
+`compute_forward_pe()` fresh on its own slow (~daily) cadence and caches them
+to disk -- see IvRankJob's docstring."""
 
 from __future__ import annotations
 
@@ -9,7 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .iv_rank import SCHEMA_VERSION, compute_market_signals
+from .iv_rank import SCHEMA_VERSION, compute_forward_pe, compute_market_signals
 from .realtime import REALTIME_DIR
 from .scanner import load_universe
 
@@ -20,10 +21,11 @@ STARTUP_DELAY = 5 * 60        # let the options scan claim Yahoo's attention fir
 
 class IvRankJob:
     """Background loop maintaining the per-symbol signals from
-    iv_rank.compute_market_signals() -- the realized-vol-rank proxy for "IV
-    Rank" and the trailing-closes window the scanner turns into a live price
-    percentile. Decoupled from ScannerJob's ~15-min cadence on purpose --
-    these change slowly and every extra Yahoo call is extra rate-limit risk."""
+    iv_rank.compute_market_signals() (IV Rank proxy, rv_30, IV/RV %ile, RSI,
+    the trailing-closes window the scanner turns into a live price
+    percentile) plus compute_forward_pe(). Decoupled from ScannerJob's
+    manual-refresh cadence on purpose -- these change slowly and every extra
+    Yahoo call is extra rate-limit risk."""
 
     def __init__(self, cache_file: Path = CACHE_FILE, interval: int = REFRESH_SECONDS,
                 startup_delay: int = STARTUP_DELAY):
@@ -71,9 +73,16 @@ class IvRankJob:
             return None
 
     def _run(self) -> None:
-        """Recompute `self.signals` for the full universe and cache it."""
+        """Recompute `self.signals` for the full universe and cache it.
+        forward_pe is merged in as an extra key per symbol -- it has no
+        batched fetch (see compute_forward_pe's note), so it's the slower
+        half of this cycle; still fine given this job's own slow cadence."""
         try:
-            self.signals = compute_market_signals(load_universe())
+            symbols = load_universe()
+            signals = compute_market_signals(symbols)
+            for sym, pe in compute_forward_pe(symbols).items():
+                signals.setdefault(sym, {})["forward_pe"] = pe
+            self.signals = signals
             self.as_of = pd.Timestamp.now("UTC").isoformat(timespec="seconds")
             self._write_cache()
         except Exception:
