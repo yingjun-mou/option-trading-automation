@@ -96,6 +96,8 @@
   .pct-lo { background: rgba(248,81,73,.18); color: var(--down); }   /* low band (red) */
   .pct-mid { background: rgba(210,153,34,.18); color: var(--warn); } /* middle band (amber) */
   .pct-blue { background: rgba(88,166,255,.18); color: var(--accent); } /* extreme band (IV/RV only) */
+  .pct-strong-hi { background: rgba(63,185,80,.35); color: var(--up); font-weight: 700; }   /* Strong Bull */
+  .pct-strong-lo { background: rgba(248,81,73,.35); color: var(--down); font-weight: 700; } /* Strong Bear */
   .sym-link { color: var(--text); text-decoration: none; }
   .sym-link:hover { color: var(--accent); text-decoration: underline; }
 
@@ -107,6 +109,19 @@
   .chart-note { color: var(--muted); font-size: 11px; margin-top: 8px; }
   table.macro td:first-child { color: var(--muted); }
   table.macro td:last-child .pct-pill { font-size: 13px; }
+  table.macro tr.macro-section td { color: var(--accent); font-size: 11px; text-transform: uppercase;
+    letter-spacing: .04em; padding-top: 14px; border-bottom: 1px solid var(--line); }
+  .score-rule { color: var(--muted); font-size: 11px; }
+
+  .regime-badge { display: flex; align-items: baseline; gap: 10px; margin: 2px 0 14px; }
+  .regime-label { font-size: 19px; font-weight: 700; padding: 4px 12px; border-radius: 8px;
+    background: var(--line); }
+  .regime-score { color: var(--muted); font-size: 12px; }
+  .regime-strong-bull { background: rgba(63,185,80,.35); color: var(--up); }
+  .regime-bull { background: rgba(63,185,80,.18); color: var(--up); }
+  .regime-sideways { background: rgba(210,153,34,.18); color: var(--warn); }
+  .regime-bear { background: rgba(248,81,73,.18); color: var(--down); }
+  .regime-strong-bear { background: rgba(248,81,73,.35); color: var(--down); }
 </style>
 </head>
 <body>
@@ -245,6 +260,10 @@
 
       <section class="panel">
         <h2>Macro snapshot</h2>
+        <div class="regime-badge">
+          <span class="regime-label" id="regimeLabel">&ndash;</span>
+          <span class="regime-score" id="regimeScore"></span>
+        </div>
         <table class="params macro" id="macroTable">
           <tbody><tr><td colspan="2" style="color:var(--muted)">loading ...</td></tr></tbody>
         </table>
@@ -276,6 +295,22 @@
           once without ~100 separate API calls. Colored
           <span class="pct-pill pct-hi">green</span> &gt;60%,
           <span class="pct-pill pct-lo">red</span> &lt;40%, amber between.</li>
+        <li><b>Slow score (tier 1)</b>: -4 to +4, +1/-1 per condition below (0 in its neutral zone,
+          or if an input is missing) -- <b>Price/SMA200</b> &gt;1.03x / &lt;0.97x,
+          <b>SMA50/SMA200</b> &gt;1.01x / &lt;0.99x, <b>Slope 200</b> (SMA200 now vs. 20 trading
+          days ago) &gt;+0.5% / &lt;-0.5%, and <b>+DI vs -DI</b> (ADX's own directional
+          components -- whether rising or falling momentum currently dominates). Uses its own
+          SMA50/SMA200 calculated from price history, kept separate from the fetched 50/200 DMA
+          above -- Slope 200 needs the average's value 20 days ago, which no fetched "today only"
+          field can give, so the whole score uses one internally consistent calculation rather
+          than mixing a fetched "today" number with a computed "20 days ago" one.</li>
+        <li><b>Market regime</b> combines the slow score with ADX:
+          <span class="pct-pill pct-strong-hi">Strong Bull</span> (score &ge;3, ADX &ge;25),
+          <span class="pct-pill pct-hi">Bull</span> (score &ge;2, ADX &lt;25),
+          <span class="pct-pill pct-strong-lo">Strong Bear</span> (score &le;-3, ADX &ge;25),
+          <span class="pct-pill pct-lo">Bear</span> (score &le;-2, ADX &lt;25), else
+          <span class="pct-pill pct-mid">Sideways</span> -- including, e.g., a score of +2 with
+          ADX &ge;25, which the stated rules don't award to either Bull tier.</li>
         <li>Everything on this tab refreshes in the background every 30 minutes. Not investment
           advice.</li>
       </ul>
@@ -723,6 +758,42 @@ function macroBreadthCell(breadth) {
   return `<td><span class="pct-pill ${cls}">${PCT(breadth)}</span></td>`;
 }
 
+/** Picks which threshold text explains a condition's +1/0/-1 outcome --
+ * the rule that was actually satisfied, not just both rules unconditionally,
+ * so it reads as "why", not just "here are the two thresholds". */
+function scoreRule(part, upText, downText, neutralText) {
+  if (part > 0) return upText;
+  if (part < 0) return downText;
+  return neutralText;
+}
+
+/** One row of the slow score's 4-condition breakdown: `valueText` (already
+ * formatted), `ruleText` (the threshold that produced this outcome, from
+ * scoreRule), and a +1/0/-1 pill for the contribution itself. */
+function scoreRow(label, valueText, part, ruleText) {
+  if (part === null || part === undefined) return `<tr><td>${label}</td><td>${valueText}</td></tr>`;
+  const cls = part > 0 ? "pct-hi" : part < 0 ? "pct-lo" : "pct-mid";
+  const sign = part > 0 ? "+1" : part < 0 ? "-1" : "0";
+  const rule = ruleText ? ` <span class="score-rule">(${ruleText})</span>` : "";
+  return `<tr><td>${label}</td><td>${valueText}${rule} <span class="pct-pill ${cls}">${sign}</span></td></tr>`;
+}
+
+const REGIME_CLASS = {
+  "Strong Bull": "regime-strong-bull", "Bull": "regime-bull", "Sideways": "regime-sideways",
+  "Bear": "regime-bear", "Strong Bear": "regime-strong-bear",
+};
+
+/** Updates the "Strong Bull/Bull/Sideways/Bear/Strong Bear" badge above the
+ * snapshot table from the slow score + market_regime the API returns. */
+function updateRegimeBadge(s) {
+  const label = document.getElementById("regimeLabel");
+  const score = document.getElementById("regimeScore");
+  label.textContent = s.market_regime || "-";
+  label.className = "regime-label " + (REGIME_CLASS[s.market_regime] || "");
+  score.textContent = s.slow_score != null
+    ? `slow score ${s.slow_score > 0 ? "+" : ""}${s.slow_score} (range -4 to +4)` : "";
+}
+
 async function refreshMacro() {
   let d;
   try {
@@ -733,6 +804,8 @@ async function refreshMacro() {
   }
   const s = d.signals || {};
   const dash = v => v === null || v === undefined ? "&ndash;" : v;
+  const p = s.slow_score_parts || {};
+  const ratioText = (a, b) => (a != null && b != null) ? (a / b).toFixed(3) + "x" : "-";
   document.getElementById("macroTable").innerHTML = `
     <tr><td>QQQ price</td><td>${dash(s.qqq_price != null ? "$" + F(s.qqq_price) : null)}</td></tr>
     <tr><td>50 DMA</td><td>${dash(s.fifty_dma != null ? "$" + F(s.fifty_dma) : null)}</td></tr>
@@ -744,7 +817,19 @@ async function refreshMacro() {
     <tr><td>VIX</td><td>${dash(s.vix != null ? F(s.vix) : null)}</td></tr>
     <tr><td>VIX / VIX3M</td>${macroVixRatioCell(s.vix_over_vix3m)}</tr>
     <tr><td>Nasdaq-100 breadth</td>${macroBreadthCell(s.nasdaq100_breadth)}</tr>
+    <tr class="macro-section"><td colspan="2">Slow score (tier 1)</td></tr>
+    ${scoreRow("Price / SMA200 (calc)", ratioText(s.qqq_price, s.sma200_calc), p.price_vs_sma200,
+      scoreRule(p.price_vs_sma200, ">1.03", "<0.97", "0.97-1.03"))}
+    ${scoreRow("SMA50 / SMA200 (calc)", ratioText(s.sma50_calc, s.sma200_calc), p.sma50_vs_sma200,
+      scoreRule(p.sma50_vs_sma200, ">1.01", "<0.99", "0.99-1.01"))}
+    ${scoreRow("Slope 200 (20d)", s.slope_200 != null ? PCT(s.slope_200) : "-", p.slope_200,
+      scoreRule(p.slope_200, ">+0.5%", "<-0.5%", "-0.5% to +0.5%"))}
+    ${scoreRow("+DI / -DI (14)",
+      (s.plus_di_14 != null && s.minus_di_14 != null)
+        ? s.plus_di_14.toFixed(1) + " / " + s.minus_di_14.toFixed(1) : "-", p.directional,
+      scoreRule(p.directional, "+DI>-DI", "+DI<-DI", "+DI=-DI"))}
   `;
+  updateRegimeBadge(s);
   document.getElementById("macroAsOf").textContent =
     d.as_of ? "as of " + new Date(d.as_of).toLocaleString() : "not computed yet -- check back shortly";
 }
