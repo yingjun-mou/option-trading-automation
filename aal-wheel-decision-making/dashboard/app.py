@@ -5,11 +5,13 @@ serves the background ScannerJob's cached cross-sectional scan."""
 
 from __future__ import annotations
 
+import hmac
 import json
+import os
 import sys
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template
+from flask import Flask, Response, jsonify, render_template, request
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -27,6 +29,32 @@ PORTFOLIO_FILE = MOCK_DIR / "portfolio.json"
 
 app = Flask(__name__)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
+
+# HTTP Basic Auth, active only when both env vars are set -- local dev (nothing
+# set) stays completely open, exactly like before. Set these when deploying
+# anywhere reachable from the internet (this dashboard has no other access
+# control, and the Premium Scanner's activity is otherwise visible to anyone
+# with the URL). Compared with hmac.compare_digest to avoid a timing attack.
+DASHBOARD_USER = os.environ.get("DASHBOARD_USER")
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD")
+
+if os.environ.get("RENDER") and not (DASHBOARD_USER and DASHBOARD_PASSWORD):
+    print("dashboard: WARNING -- running on Render with DASHBOARD_USER/DASHBOARD_PASSWORD "
+          "unset. This instance is reachable from the public internet with NO login.")
+
+
+@app.before_request
+def _require_auth():
+    """Prompt for the shared username/password if auth is configured (see above)."""
+    if not (DASHBOARD_USER and DASHBOARD_PASSWORD):
+        return None
+    auth = request.authorization
+    valid = (auth and hmac.compare_digest(auth.username or "", DASHBOARD_USER)
+             and hmac.compare_digest(auth.password or "", DASHBOARD_PASSWORD))
+    if not valid:
+        return Response("Authentication required.", 401,
+                        {"WWW-Authenticate": 'Basic realm="AAL Wheel Advisor"'})
+    return None
 
 
 @app.after_request

@@ -1,0 +1,1 @@
+web: gunicorn --worker-class gthread --workers 1 --threads 4 --timeout 90 --bind 0.0.0.0:$PORT dashboard.app:app

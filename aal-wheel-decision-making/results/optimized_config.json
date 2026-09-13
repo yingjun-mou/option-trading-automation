@@ -1,0 +1,54 @@
+{
+  "portfolio_size": 100000.0,
+  "max_alloc_pct": 1.0,
+  "enable_csp": true,
+  "enable_cc": true,
+  "initial_alloc": 0.0,
+  "csp_signal": "abs",
+  "csp_edges": [
+    14,
+    13,
+    12,
+    11,
+    10
+  ],
+  "csp_tranches": [
+    0.2,
+    0.4,
+    0.6,
+    0.8,
+    1.0
+  ],
+  "csp_reentry_edge": 0.5,
+  "csp_dte": 14,
+  "csp_delta": 0.3,
+  "csp_profit_take": 1.0,
+  "csp_dte_ladder": [],
+  "iv_pct_min": null,
+  "iv_minus_rv_min": null,
+  "cc_signal": "abs",
+  "cc_edges": [
+    12,
+    14,
+    16,
+    18
+  ],
+  "cc_tranches": [
+    0.0,
+    0.34,
+    0.67,
+    1.0
+  ],
+  "cc_dte": 30,
+  "cc_delta": 0.2,
+  "cc_callaway_delta": 0.35,
+  "cc_min_strike_vs_basis": false,
+  "cc_profit_take": 1.0,
+  "cc_rebuy_when_flat": false,
+  "sell_fill": "mid",
+  "buy_fill": "mid",
+  "slippage": 0.02,
+  "commission_per_contract": 0.65,
+  "dte_tol": 6,
+  "label": "OPTIMISED"
+}

@@ -14,6 +14,7 @@ realtime_data/iv_rank_cache.json
 
 results/*
 !results/.gitkeep
+!results/optimized_config.json
 
 __pycache__/
 *.pyc

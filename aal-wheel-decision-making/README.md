@@ -43,7 +43,51 @@ python scripts/build_universe.py     # scanner: (re)build the S&P500+Nasdaq tick
 Research output lands in `results/`: `RESEARCH_REPORT.md` (the readable answer),
 grid CSVs, walk-forward and regime tables, per-trade log, equity plots. The
 dashboard reads `results/optimized_config.json` for its rules (falls back to
-defaults if you have not run the research yet).
+defaults if you have not run the research yet). `optimized_config.json`
+specifically is checked into git (unlike the rest of `results/`) so a fresh
+deploy shows "OPTIMISED" rules out of the box -- it's just tuned strategy
+parameters, no personal data.
+
+## Deploying (so you can reach the dashboard from any computer, not just this one)
+
+The dashboard is a normal Flask app; `Procfile` + `render.yaml` here target
+[Render](https://render.com)'s free tier specifically, since that's what this
+project was set up against. Free tier means the instance **spins down after
+~15 min idle** and has **no persistent disk** -- every time you open the
+dashboard after a gap, it's a cold start: no cached scan, so it kicks off a
+fresh multi-minute scan against Yahoo before the Premium Scanner tab has
+data (the AAL Wheel tab is unaffected -- its own historical data just
+re-fetches from yfinance once, in a couple seconds). This was a deliberate
+choice over paid always-on hosting; see this project's chat history if you
+want to revisit that tradeoff later.
+
+1. Push this repo to GitHub (already the case if you're reading this from a
+   clone of it).
+2. Create a free account at [render.com](https://render.com) and connect
+   your GitHub account.
+3. **New +** -> **Blueprint** -> pick this repo. Render reads `render.yaml`
+   (root dir is set to `aal-wheel-decision-making` in that file, since this
+   project lives inside a larger repo) and proposes the web service --
+   review and confirm.
+4. Before the first deploy finishes, set the two secret environment
+   variables it will prompt for (also editable later under the service's
+   **Environment** tab): `DASHBOARD_USER` and `DASHBOARD_PASSWORD`. These
+   gate every page and API route behind HTTP Basic Auth (see `dashboard/app.py`)
+   -- required, since this becomes reachable by anyone with the URL once
+   deployed. Local `python dashboard/app.py` runs stay completely open
+   (these env vars are unset there), unchanged from before.
+5. Once deployed, Render gives you a `https://<service-name>.onrender.com`
+   URL -- open it from any computer, log in with the username/password from
+   step 4.
+
+No Blueprint access, or want to configure it by hand instead: create a new
+**Web Service**, point it at this repo with **Root Directory**
+`aal-wheel-decision-making`, **Build Command** `pip install -r requirements.txt`,
+**Start Command** from `Procfile` (`gunicorn --worker-class gthread --workers 1
+--threads 4 --timeout 90 --bind 0.0.0.0:$PORT dashboard.app:app` -- the
+`--workers 1` is deliberate: `ScannerJob`/`IvRankJob` are in-process
+background threads with in-memory state; a second worker process would run
+independent, uncoordinated copies of both), same two env vars as step 4.
 
 ## Data
 
