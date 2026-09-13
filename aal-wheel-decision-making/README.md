@@ -124,19 +124,26 @@ AAL wheel rules:
   signals rather than fetching history twice. Refreshed on its own ~daily
   cadence (`src/iv_rank_job.py`, `IvRankJob`, `realtime_data/iv_rank_cache.json`)
   since both barely move within a day and every extra Yahoo call is extra
-  rate-limit risk -- decoupled from the option scan's ~15-min cycle on purpose.
+  rate-limit risk -- decoupled from the option scan's cadence (see "Refresh"
+  below) on purpose. Unlike the option scan, this one still runs on its own
+  timer; it's a single lightweight `yf.download` batch, not 800+ sequential
+  ticker fetches, so an unattended timer is a much smaller rate-limit bet.
 - **Data source**: live yfinance quotes/chains (~15-20min delayed, free, no
   auth). Yahoo's unofficial endpoint rate-limits hard (HTTP 429) well before any
   useful concurrency, so `src/scanner.py` scans **sequentially** with a fixed
   gap between tickers (`REQUEST_GAP`) -- do not reintroduce concurrency without
   re-verifying against the rate limit.
-- **Refresh**: `src/scanner_job.py` runs a full scan in a background thread on
-  dashboard startup (skipped if the on-disk cache is still fresh), then every
-  `REFRESH_SECONDS`, writing `realtime_data/scanner_cache.json`. `/api/scan`
-  serves the cache instantly; `/api/scan/refresh` (the dashboard's "Refresh
-  now" button) wakes the loop early. It also merges in the latest `iv_rank_pct`
-  per symbol from `IvRankJob` (injected as `iv_rank_provider`, so this module
-  doesn't need to know that job's cadence or cache format).
+- **Refresh is manual, not on a timer**: `src/scanner_job.py` runs one scan in
+  a background thread on a cold start (no cache on disk yet, so there's
+  something to show), then does nothing further until `/api/scan/refresh`
+  (the dashboard's "Refresh now" button) wakes it. Deliberately not on an
+  automatic cadence -- 800+ tickers against a rate-limited free API isn't
+  something to fire unattended on a timer; a human decides when a rescan is
+  worth the ~8-9 minutes and the rate-limit exposure. `/api/scan` always
+  serves whatever is cached, updated or not. Each scan also merges in the
+  latest `iv_rank_pct` + a live `price_pct` per symbol from `IvRankJob`
+  (injected as `iv_rank_provider`, so this module doesn't need to know that
+  job's cadence or cache format).
 
 ## Strategy legs
 

@@ -499,7 +499,7 @@ async function refreshScan() {
   } else {
     statusEl.innerHTML = `<span class="live">${data.scanned} scanned</span>` +
       (data.failed ? ` &middot; ${data.failed} skipped (no quote/options)` : "") +
-      ` &middot; as of ${asOf} &middot; auto-refreshes every ~15 min`;
+      ` &middot; as of ${asOf} &middot; click "Refresh now" to update`;
   }
   renderScanTable(data);
 }

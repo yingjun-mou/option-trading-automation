@@ -15,9 +15,6 @@ from .realtime import REALTIME_DIR
 from .scanner import load_universe, scan_universe
 
 CACHE_FILE = REALTIME_DIR / "scanner_cache.json"
-# A full scan takes ~8-9 min on its own (scanner.REQUEST_GAP paces requests to avoid
-# Yahoo's rate limit) -- wait only ~6 min after that so cycles land near 15 min apart.
-REFRESH_SECONDS = 6 * 60
 
 
 @dataclass
@@ -58,9 +55,11 @@ def _json_safe(obj):
 
 
 class ScannerJob:
-    """Owns the background scan loop: runs on startup, then every
-    REFRESH_SECONDS, writing results to CACHE_FILE. `trigger_refresh()` wakes
-    it immediately (used by the dashboard's manual refresh button).
+    """Owns the background scan loop: one scan on a cold start (no cache yet,
+    so the dashboard has something to show), then nothing further until
+    `trigger_refresh()` wakes it -- the dashboard's manual "Refresh now"
+    button. No periodic auto re-scan: 800+ tickers against a rate-limited
+    API is not something to fire on a timer unattended.
 
     `iv_rank_provider`, if given, is called once per scan to get the current
     {symbol: {"iv_rank_pct": ..., "recent_closes": [...]}} map (see
@@ -69,10 +68,8 @@ class ScannerJob:
     kept as an injected callable so this module doesn't need to know that
     job's refresh cadence or cache format."""
 
-    def __init__(self, cache_file: Path = CACHE_FILE, interval: int = REFRESH_SECONDS,
-                iv_rank_provider=None):
+    def __init__(self, cache_file: Path = CACHE_FILE, iv_rank_provider=None):
         self.cache_file = cache_file
-        self.interval = interval
         self.iv_rank_provider = iv_rank_provider
         self.state = ScannerState()
         self._wake = threading.Event()
@@ -134,31 +131,18 @@ class ScannerJob:
         finally:
             self.state.status = "idle"
 
-    def _cache_age_seconds(self) -> float | None:
-        """Seconds since the cached scan, or None if there isn't one yet."""
-        if not self.state.as_of:
-            return None
-        try:
-            ts = pd.Timestamp(self.state.as_of)
-            now = pd.Timestamp.now(tz=ts.tzinfo)
-            return (now - ts).total_seconds()
-        except Exception:
-            return None
-
     def _loop(self) -> None:
-        """Runs forever on a background thread: scan, wait `interval`, repeat.
-        `trigger_refresh()` interrupts the wait to scan sooner."""
-        # A restart (dev reload, crash recovery) shouldn't blow away a still-fresh
-        # cache by immediately re-scanning 800+ tickers against a rate-limited API --
-        # only fire early if the cache is missing or already stale.
-        age = self._cache_age_seconds()
-        if age is not None and age < self.interval:
-            self._wake.wait(self.interval - age)
-            self._wake.clear()
-        while True:
+        """Runs on a background thread. A restart (dev reload, crash
+        recovery) with an already-cached scan on disk shouldn't blow it away
+        by re-scanning 800+ tickers unattended -- only scan immediately if
+        there's truly nothing cached yet. After that, block indefinitely;
+        only `trigger_refresh()` (the manual button) wakes it."""
+        if not self.state.rows:
             self._run_scan()
-            self._wake.wait(self.interval)
+        while True:
+            self._wake.wait()
             self._wake.clear()
+            self._run_scan()
 
     def start(self) -> None:
         """Launch the background loop (daemon thread -- doesn't block process exit)."""
