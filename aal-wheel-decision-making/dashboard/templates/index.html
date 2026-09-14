@@ -124,6 +124,11 @@
   .regime-strong-bear { background: rgba(248,81,73,.35); color: var(--down); }
   .regime-bullish-reversal, .regime-bearish-reversal { background: rgba(88,166,255,.30); color: var(--accent); }
 
+  .regime-history { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0 0 14px; }
+  .regime-history .hist-label { color: var(--muted); font-size: 10px; text-transform: uppercase;
+    letter-spacing: .04em; margin-right: 2px; }
+  .regime-tag { font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 5px; cursor: default; }
+
   table.legend { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
   table.legend th { text-align: left; color: var(--muted); font-weight: 600; font-size: 11px;
     text-transform: uppercase; letter-spacing: .04em; padding: 5px 8px; border-bottom: 1px solid var(--line); }
@@ -272,6 +277,7 @@
           <span class="regime-label" id="regimeLabel">&ndash;</span>
           <span class="regime-score" id="regimeScore"></span>
         </div>
+        <div class="regime-history" id="regimeHistory"></div>
         <table class="params macro" id="macroTable">
           <tbody><tr><td colspan="2" style="color:var(--muted)">loading ...</td></tr></tbody>
         </table>
@@ -332,6 +338,11 @@
           <span class="pct-pill pct-lo">Bear</span> (score &le;-2, ADX &lt;25), else
           <span class="pct-pill pct-mid">Sideways</span> -- 7 possible labels in total (see the
           legend table below).</li>
+        <li>The small tags next to the regime badge show the last 3 days' regimes (oldest first,
+          re-derived by re-running the exact same classification against each day's own
+          historical values) -- a quick visual check for whether the label above is a stable read
+          or has been flip-flopping day to day, since a large day-to-day swing in either score can
+          flip the labeled regime even when the underlying trend hasn't really changed.</li>
         <li>Everything on this tab refreshes in the background every 30 minutes. Not investment
           advice.</li>
       </ul>
@@ -863,6 +874,21 @@ function updateRegimeBadge(s) {
   score.textContent = bits.join(" · ");
 }
 
+/** Small color tags for the last few days' regime (oldest first, ending
+ * just before today's own badge above) -- lets a flip-flopping
+ * classification stand out at a glance instead of only ever showing
+ * today's possibly-noisy snapshot. `history` is [{date, regime}, ...]. */
+function updateRegimeHistory(history) {
+  const el = document.getElementById("regimeHistory");
+  if (!history || !history.length) { el.innerHTML = ""; return; }
+  const tags = history.map(h => {
+    const cls = REGIME_CLASS[h.regime] || "regime-sideways";
+    const label = (REGIME_ARROW[h.regime] || "") + (h.regime || "-");
+    return `<span class="regime-tag ${cls}" title="${h.date}">${label}</span>`;
+  }).join("");
+  el.innerHTML = `<span class="hist-label">last ${history.length}d</span>${tags}`;
+}
+
 async function refreshMacro() {
   let d;
   try {
@@ -917,6 +943,7 @@ async function refreshMacro() {
     <tr><td>Bearish reversal count</td>${reversalCountCell(s.bearish_reversal_count, "pct-lo")}</tr>
   `;
   updateRegimeBadge(s);
+  updateRegimeHistory(s.regime_history);
   document.getElementById("macroAsOf").textContent =
     d.as_of ? "as of " + new Date(d.as_of).toLocaleString() : "not computed yet -- check back shortly";
 }
