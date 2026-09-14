@@ -122,6 +122,14 @@
   .regime-sideways { background: rgba(210,153,34,.18); color: var(--warn); }
   .regime-bear { background: rgba(248,81,73,.18); color: var(--down); }
   .regime-strong-bear { background: rgba(248,81,73,.35); color: var(--down); }
+  .regime-bullish-reversal, .regime-bearish-reversal { background: rgba(88,166,255,.30); color: var(--accent); }
+
+  table.legend { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+  table.legend th { text-align: left; color: var(--muted); font-weight: 600; font-size: 11px;
+    text-transform: uppercase; letter-spacing: .04em; padding: 5px 8px; border-bottom: 1px solid var(--line); }
+  table.legend td { padding: 6px 8px; border-bottom: 1px dotted var(--line); vertical-align: top; }
+  table.legend td:first-child { white-space: nowrap; }
+  table.legend td:last-child { color: var(--muted); font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; }
 </style>
 </head>
 <body>
@@ -304,16 +312,51 @@
           above -- Slope 200 needs the average's value 20 days ago, which no fetched "today only"
           field can give, so the whole score uses one internally consistent calculation rather
           than mixing a fetched "today" number with a computed "20 days ago" one.</li>
-        <li><b>Market regime</b> combines the slow score with ADX:
+        <li><b>Reversal score (tier 2)</b>: two separate 0-5 counts (not netted into one signed
+          score like tier 1) tallying how many of 5 measures tilt bullish vs. bearish --
+          <b>Price vs SMA20</b>, <b>Price vs SMA50</b>, <b>SMA20 vs SMA50</b> (all plain
+          greater-than/less-than, no neutral band), <b>+DI vs -DI</b>, and <b>ADX momentum</b>
+          (ADX now vs. 10 trading days ago) &gt;+3 / &lt;-3 ADX points. Each measure counts toward
+          <i>one</i> side or neither, never both. Reuses tier 1's own SMA50 and adds its own SMA20
+          (same "no fetched historical value" reasoning as Slope 200 above, just 10 days back
+          instead of 20).</li>
+        <li><b>Market regime</b> checks the reversal counts <i>before</i> the tier-1 bands, so a
+          reversal label overrides what tier 1 alone would say:
+          <span class="pct-pill" style="background:rgba(88,166,255,.30);color:var(--accent)">Bullish Reversal</span>
+          (bullish reversal count &ge;4/5 <b>and</b> slow score &le;-2),
+          <span class="pct-pill" style="background:rgba(88,166,255,.30);color:var(--accent)">Bearish Reversal</span>
+          (bearish reversal count &ge;4/5 <b>and</b> slow score &ge;2), else falls through to tier 1:
           <span class="pct-pill pct-strong-hi">Strong Bull</span> (score &ge;3, ADX &ge;25),
           <span class="pct-pill pct-hi">Bull</span> (score &ge;2, ADX &lt;25),
           <span class="pct-pill pct-strong-lo">Strong Bear</span> (score &le;-3, ADX &ge;25),
           <span class="pct-pill pct-lo">Bear</span> (score &le;-2, ADX &lt;25), else
-          <span class="pct-pill pct-mid">Sideways</span> -- including, e.g., a score of +2 with
-          ADX &ge;25, which the stated rules don't award to either Bull tier.</li>
+          <span class="pct-pill pct-mid">Sideways</span> -- 7 possible labels in total (see the
+          legend table below).</li>
         <li>Everything on this tab refreshes in the background every 30 minutes. Not investment
           advice.</li>
       </ul>
+      <table class="legend">
+        <caption style="text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;
+          letter-spacing:.04em;padding-bottom:6px">Regime legend &mdash; checked top to bottom;
+          the first match wins</caption>
+        <thead><tr><th>Regime</th><th>Condition</th></tr></thead>
+        <tbody>
+          <tr><td><span class="pct-pill" style="background:rgba(88,166,255,.30);color:var(--accent)">▲ Bullish Reversal</span></td>
+            <td>bullish_reversal_count &gt;= 4/5 AND slow_score &lt;= -2</td></tr>
+          <tr><td><span class="pct-pill" style="background:rgba(88,166,255,.30);color:var(--accent)">▼ Bearish Reversal</span></td>
+            <td>bearish_reversal_count &gt;= 4/5 AND slow_score &gt;= 2</td></tr>
+          <tr><td><span class="pct-pill pct-strong-hi">Strong Bull</span></td>
+            <td>slow_score &gt;= 3 AND ADX &gt;= 25</td></tr>
+          <tr><td><span class="pct-pill pct-hi">Bull</span></td>
+            <td>slow_score &gt;= 2 AND ADX &lt; 25</td></tr>
+          <tr><td><span class="pct-pill pct-mid">Sideways</span></td>
+            <td>none of the other 6 conditions hold</td></tr>
+          <tr><td><span class="pct-pill pct-lo">Bear</span></td>
+            <td>slow_score &lt;= -2 AND ADX &lt; 25</td></tr>
+          <tr><td><span class="pct-pill pct-strong-lo">Strong Bear</span></td>
+            <td>slow_score &lt;= -3 AND ADX &gt;= 25</td></tr>
+        </tbody>
+      </table>
     </footer>
   </div>
 </div>
@@ -778,20 +821,46 @@ function scoreRow(label, valueText, part, ruleText) {
   return `<tr><td>${label}</td><td>${valueText}${rule} <span class="pct-pill ${cls}">${sign}</span></td></tr>`;
 }
 
+/** One row of the tier-2 reversal breakdown: like scoreRow, but each measure
+ * tags "Bull"/"Bear"/"Flat" (which of the two 0-5 counts it feeds) instead
+ * of a signed +1/-1 -- these 5 measures don't net into one score. */
+function reversalRow(label, valueText, part, ruleText) {
+  if (part === null || part === undefined) return `<tr><td>${label}</td><td>${valueText}</td></tr>`;
+  const cls = part > 0 ? "pct-hi" : part < 0 ? "pct-lo" : "pct-mid";
+  const tag = part > 0 ? "Bull" : part < 0 ? "Bear" : "Flat";
+  const rule = ruleText ? ` <span class="score-rule">(${ruleText})</span>` : "";
+  return `<tr><td>${label}</td><td>${valueText}${rule} <span class="pct-pill ${cls}">${tag}</span></td></tr>`;
+}
+
+/** The X/5 total row for one reversal direction -- `hiClass` is "pct-hi"
+ * (green) for the bullish count, "pct-lo" (red) for the bearish one, since a
+ * *high* count is bullish-tilted or bearish-tilted respectively, unlike the
+ * neutral 0/1 boundary the other counts use. Amber below the threshold. */
+function reversalCountCell(count, hiClass) {
+  if (count === null || count === undefined) return `<td>&ndash;</td>`;
+  const cls = count >= 4 ? hiClass : "pct-mid";
+  return `<td><span class="pct-pill ${cls}">${count}/5</span></td>`;
+}
+
 const REGIME_CLASS = {
   "Strong Bull": "regime-strong-bull", "Bull": "regime-bull", "Sideways": "regime-sideways",
   "Bear": "regime-bear", "Strong Bear": "regime-strong-bear",
+  "Bullish Reversal": "regime-bullish-reversal", "Bearish Reversal": "regime-bearish-reversal",
 };
+const REGIME_ARROW = { "Bullish Reversal": "▲ ", "Bearish Reversal": "▼ " };
 
 /** Updates the "Strong Bull/Bull/Sideways/Bear/Strong Bear" badge above the
  * snapshot table from the slow score + market_regime the API returns. */
 function updateRegimeBadge(s) {
   const label = document.getElementById("regimeLabel");
   const score = document.getElementById("regimeScore");
-  label.textContent = s.market_regime || "-";
+  label.textContent = (REGIME_ARROW[s.market_regime] || "") + (s.market_regime || "-");
   label.className = "regime-label " + (REGIME_CLASS[s.market_regime] || "");
-  score.textContent = s.slow_score != null
-    ? `slow score ${s.slow_score > 0 ? "+" : ""}${s.slow_score} (range -4 to +4)` : "";
+  const bits = [];
+  if (s.slow_score != null) bits.push(`slow score ${s.slow_score > 0 ? "+" : ""}${s.slow_score} (-4 to +4)`);
+  if (s.bullish_reversal_count != null) bits.push(`bullish reversal ${s.bullish_reversal_count}/5`);
+  if (s.bearish_reversal_count != null) bits.push(`bearish reversal ${s.bearish_reversal_count}/5`);
+  score.textContent = bits.join(" · ");
 }
 
 async function refreshMacro() {
@@ -805,7 +874,9 @@ async function refreshMacro() {
   const s = d.signals || {};
   const dash = v => v === null || v === undefined ? "&ndash;" : v;
   const p = s.slow_score_parts || {};
+  const r = s.reversal_parts || {};
   const ratioText = (a, b) => (a != null && b != null) ? (a / b).toFixed(3) + "x" : "-";
+  const vsText = (a, b) => (a != null && b != null) ? "$" + F(a) + " vs $" + F(b) : "-";
   document.getElementById("macroTable").innerHTML = `
     <tr><td>QQQ price</td><td>${dash(s.qqq_price != null ? "$" + F(s.qqq_price) : null)}</td></tr>
     <tr><td>50 DMA</td><td>${dash(s.fifty_dma != null ? "$" + F(s.fifty_dma) : null)}</td></tr>
@@ -828,6 +899,22 @@ async function refreshMacro() {
       (s.plus_di_14 != null && s.minus_di_14 != null)
         ? s.plus_di_14.toFixed(1) + " / " + s.minus_di_14.toFixed(1) : "-", p.directional,
       scoreRule(p.directional, "+DI>-DI", "+DI<-DI", "+DI=-DI"))}
+    <tr class="macro-section"><td colspan="2">Reversal score (tier 2)</td></tr>
+    ${reversalRow("Price vs SMA20 (calc)", vsText(s.qqq_price, s.sma20_calc), r.price_vs_sma20,
+      scoreRule(r.price_vs_sma20, "Price&gt;SMA20", "Price&lt;SMA20", "Price=SMA20"))}
+    ${reversalRow("Price vs SMA50 (calc)", vsText(s.qqq_price, s.sma50_calc), r.price_vs_sma50,
+      scoreRule(r.price_vs_sma50, "Price&gt;SMA50", "Price&lt;SMA50", "Price=SMA50"))}
+    ${reversalRow("SMA20 vs SMA50 (calc)", vsText(s.sma20_calc, s.sma50_calc), r.sma20_vs_sma50,
+      scoreRule(r.sma20_vs_sma50, "SMA20&gt;SMA50", "SMA20&lt;SMA50", "SMA20=SMA50"))}
+    ${reversalRow("+DI / -DI (14)",
+      (s.plus_di_14 != null && s.minus_di_14 != null)
+        ? s.plus_di_14.toFixed(1) + " / " + s.minus_di_14.toFixed(1) : "-", r.directional,
+      scoreRule(r.directional, "+DI&gt;-DI", "+DI&lt;-DI", "+DI=-DI"))}
+    ${reversalRow("ADX momentum (10d)",
+      s.adx_momentum_10 != null ? (s.adx_momentum_10 > 0 ? "+" : "") + s.adx_momentum_10.toFixed(1) : "-",
+      r.adx_momentum, scoreRule(r.adx_momentum, ">+3", "<-3", "-3 to +3"))}
+    <tr><td>Bullish reversal count</td>${reversalCountCell(s.bullish_reversal_count, "pct-hi")}</tr>
+    <tr><td>Bearish reversal count</td>${reversalCountCell(s.bearish_reversal_count, "pct-lo")}</tr>
   `;
   updateRegimeBadge(s);
   document.getElementById("macroAsOf").textContent =

@@ -317,8 +317,9 @@ unrelated to any single stock's option chain:
     instead (same chunked pattern as `iv_rank.compute_market_signals`, just a
     plain rolling-mean SMA). Colored green &gt;60%, red &lt;40%, amber
     between.
-- **Slow score (tier 1)** and **market regime** (`_slow_score`, `_classify_regime`
-  in `src/macro.py`) -- the first tier of a planned 2-tier scoring system:
+- **Slow score (tier 1)**, **reversal score (tier 2)**, and **market regime**
+  (`_slow_score`, `_reversal_parts`, `_classify_regime` in `src/macro.py`) --
+  a 2-tier scoring system:
   - The score sums four independent +1/-1/0 conditions to a **-4 to +4**
     total (0 both in a condition's stated neutral zone and when an input is
     missing): `Price/SMA200` &gt;1.03x (+1) / &lt;0.97x (-1);
@@ -344,10 +345,31 @@ unrelated to any single stock's option chain:
     relative to the other three bullish-when-true conditions in the same
     score. Implemented the internally-consistent way; revert `_slope_200`
     in `src/macro.py` if the literal formula was actually intended.
-  - **Market regime** combines the score with ADX: Strong Bull (score
-    &ge;3, ADX &ge;25), Bull (score &ge;2, ADX &lt;25), Strong Bear (score
-    &le;-3, ADX &ge;25), Bear (score &le;-2, ADX &lt;25), else Sideways --
-    which, per the literal rules, also catches gaps like a +2 score
+  - **Reversal score (tier 2)** is two separate **0-5 counts** (not netted
+    into one signed score the way tier 1 is), tallying how many of 5
+    measures tilt bullish vs. bearish: `Price vs SMA20`, `Price vs SMA50`,
+    `SMA20 vs SMA50` (all plain strict inequalities, no neutral band),
+    `+DI vs -DI`, and `ADX momentum` (`ADX(t) - ADX(t-10)`) &gt;+3 / &lt;-3
+    ADX points. Each measure contributes to *one* count or neither, never
+    both -- the user's bullish and bearish condition lists are exact
+    mirrors of the same 5 measures, so `_reversal_parts` computes one
+    +1/-1/0 bucket per measure and `_reversal_counts` just tallies which
+    sign each landed on. Reuses tier 1's own SMA50; adds its own SMA20 and
+    reads ADX 10 trading days back off `_directional_movement`'s now
+    full-series return (previously just today's scalar -- needed here for
+    the same "no fetched historical value" reason as Slope_200 above).
+  - **Market regime** checks the reversal counts *before* the tier-1 bands,
+    so a reversal label overrides tier 1 entirely when it fires: Bullish
+    Reversal (bullish reversal count &ge;4/5 **and** slow score &le;-2),
+    Bearish Reversal (bearish reversal count &ge;4/5 **and** slow score
+    &ge;2), else falls through to tier 1: Strong Bull (score &ge;3, ADX
+    &ge;25), Bull (score &ge;2, ADX &lt;25), Strong Bear (score &le;-3, ADX
+    &ge;25), Bear (score &le;-2, ADX &lt;25), else Sideways -- **7** possible
+    labels in total, not 5 (confirmed with the user: tier 1's existing 5
+    bands stay as-is, reversal adds 2 more on top rather than replacing
+    any of them). The dashboard's Macro tab has a legend table listing all
+    7 with their exact conditions, checked top to bottom, first match wins.
+    Per the literal rules, "Sideways" also catches gaps like a +2 score
     alongside a &ge;25 ADX (strong-trend-confirmed but not a high enough
     score for either Bull tier), not just genuinely flat readings.
   - Unlike `IvRankJob`'s ~daily cadence, `MacroJob` refreshes every 30
@@ -392,7 +414,7 @@ or dataclass to the next.
 | `scanner_job.py` | Background loop that owns the scan cadence, disk cache, and manual-refresh wake-up for the dashboard; merges in `iv_rank_pct` from an injected provider. |
 | `iv_rank.py` | `compute_market_signals(symbols)` -- the realized-vol-percentile proxy for IV Rank, each symbol's trailing closes (for the live Price %ile column), raw `rv_30` (for the IV/RV column), `iv_rv_pct` (that ratio's own 3-month percentile), and `rsi_14`, all batched via one `yf.download` per symbol. `compute_forward_pe(symbols)` -- forward P/E, sequential (no batch endpoint for fundamentals). Carries `SCHEMA_VERSION` for `IvRankJob`'s cache-invalidation check. |
 | `iv_rank_job.py` | Background loop maintaining that proxy on its own slow (~daily) cadence, decoupled from the option scan. |
-| `macro.py` | `compute_macro_signals()` -- QQQ price + Yahoo's own 50/200-day averages, the 6-month return, ADX(14) + its +DI/-DI, the VIX/VIX3M term structure, Nasdaq-100 breadth, and the tier-1 slow score + market regime classification (ADX/breadth/the slow score's own SMA50/SMA200 are computed here rather than fetched -- see "Macro tab" above). |
+| `macro.py` | `compute_macro_signals()` -- QQQ price + Yahoo's own 50/200-day averages, the 6-month return, ADX(14) + its +DI/-DI, the VIX/VIX3M term structure, Nasdaq-100 breadth, the tier-1 slow score, the tier-2 reversal counts, and the combined 7-way market regime classification (ADX/breadth/both tiers' own SMA20/SMA50/SMA200 are computed here rather than fetched -- see "Macro tab" above). |
 | `macro_job.py` | Background loop refreshing that snapshot every 30 minutes, cached to `realtime_data/macro_cache.json`. |
 | `pricing.py` | Black-Scholes price, greeks, implied-vol solve. |
 | `features.py` | Daily features from `MarketData`: rolling 3Y/1Y price percentile (main signal), realised vol, IV percentile, momentum. |
