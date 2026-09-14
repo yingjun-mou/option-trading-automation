@@ -135,6 +135,22 @@
   table.legend td { padding: 6px 8px; border-bottom: 1px dotted var(--line); vertical-align: top; }
   table.legend td:first-child { white-space: nowrap; }
   table.legend td:last-child { color: var(--muted); font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; }
+  /* The regime-action matrix reuses table.legend's styling but its cells are plain
+     recommendation text, not a code-like condition -- undo the monospace/muted
+     last-child rule above and give every column that treatment instead. */
+  table.legend.matrix td { color: var(--text); font-family: inherit; font-size: 12px; text-align: center; }
+  table.legend.matrix td:first-child { text-align: left; font-weight: 600; }
+  table.legend.matrix tr.current-regime { background: rgba(88,166,255,.10); }
+  table.legend.matrix tr.current-regime td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+
+  .reco-panel { margin-top: 16px; }
+  .reco-current { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
+  .reco-item { flex: 1 1 130px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px 12px; }
+  .reco-item .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+    margin-bottom: 4px; }
+  .reco-item .v { font-size: 14px; font-weight: 600; }
+  .reco-note { color: var(--muted); font-size: 11px; margin-top: 10px; }
 </style>
 </head>
 <body>
@@ -284,6 +300,12 @@
         <div class="asof" id="macroAsOf"></div>
       </section>
     </div>
+
+    <section class="panel reco-panel">
+      <h2>Recommendations</h2>
+      <div class="reco-current" id="recoCurrent">loading ...</div>
+    </section>
+
     <footer>
       <table class="legend">
         <caption style="text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;
@@ -307,6 +329,15 @@
             <td>slow_score &lt;= -3 AND ADX &gt;= 25</td></tr>
         </tbody>
       </table>
+
+      <table class="legend matrix" id="regimeMatrix">
+        <caption style="text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;
+          letter-spacing:.04em;padding-bottom:6px">Regime-action matrix &mdash; today's regime is
+          highlighted; suggestions only, decide and execute manually</caption>
+        <thead><tr><th>Regime</th><th>New LEAP</th><th>PMCC</th><th>Wheel CSP</th><th>QQQ DCA</th></tr></thead>
+        <tbody><tr><td colspan="5" style="color:var(--muted)">loading ...</td></tr></tbody>
+      </table>
+
       <ul>
         <li><b>50 DMA / 200 DMA</b> come straight from Yahoo's own
           <code>fiftyDayAverage</code>/<code>twoHundredDayAverage</code> fields -- fetched, not
@@ -365,6 +396,13 @@
           historical values) -- a quick visual check for whether the label above is a stable read
           or has been flip-flopping day to day, since a large day-to-day swing in either score can
           flip the labeled regime even when the underlying trend hasn't really changed.</li>
+        <li>The <b>Recommendations</b> panel and the regime-action matrix below (highlighting
+          today's row) are a static lookup table keyed by the live regime -- not a computed
+          signal like everything else on this tab. <b>New LEAP</b> = new long-dated call entries,
+          <b>PMCC</b> = the short-call leg of an existing poor man's covered call, <b>Wheel CSP</b>
+          = cash-secured put sizing, <b>QQQ DCA</b> = the dollar-cost-average multiplier on the
+          baseline (1&times;) buy schedule. Purely a starting-point suggestion to translate the
+          regime into portfolio action -- not investment advice, decide and execute manually.</li>
         <li>Everything on this tab refreshes in the background every 30 minutes. Not investment
           advice.</li>
       </ul>
@@ -860,6 +898,48 @@ const REGIME_CLASS = {
 };
 const REGIME_ARROW = { "Bullish Reversal": "▲ ", "Bearish Reversal": "▼ " };
 
+/** Regime -> Action matrix: what to do with each of 4 portfolio pieces in
+ * each regime. Single source of truth for both the live "Recommendations"
+ * panel (today's row only) and the static reference matrix in the footer
+ * (all 7 rows) -- row order and emoji are exactly as given, not resorted
+ * into score order. Suggestions only, same as everywhere else on this
+ * dashboard -- not investment advice, decide and execute manually. */
+const REGIME_ACTIONS = [
+  { regime: "Strong Bull",      emoji: "\u{1F7E2}", leap: "Small / hold",              pmcc: "Low–Medium",           csp: "Medium",             dca: "1×" },
+  { regime: "Bull",             emoji: "\u{1F7E2}", leap: "Medium",                    pmcc: "Medium",                    csp: "Medium",             dca: "1×" },
+  { regime: "Bearish Reversal", emoji: "\u{1F7E0}", leap: "Pause",                     pmcc: "↑ Increase",           csp: "↓ Decrease",    dca: "1×" },
+  { regime: "Sideways",         emoji: "\u{1F7E1}", leap: "↓ Decrease",           pmcc: "↑↑ Increase a lot", csp: "↑↑ Increase a lot", dca: "1×" },
+  { regime: "Bear",             emoji: "\u{1F534}", leap: "↓ Decrease",           pmcc: "Sell into rallies",         csp: "↓↓ Decrease a lot", dca: "1.25–1.5×" },
+  { regime: "Strong Bear",      emoji: "\u{1F534}", leap: "Very little",               pmcc: "Cautious",                  csp: "Pause",              dca: "1.5–2×" },
+  { regime: "Bullish Reversal", emoji: "\u{1F7E0}", leap: "↑↑↑ Increase aggressively", pmcc: "↓ Decrease", csp: "Small → Medium", dca: "1.5×" },
+];
+
+/** Fills in the static reference matrix in the footer (all 7 rows, from
+ * REGIME_ACTIONS) and highlights whichever row matches today's live regime. */
+function renderRegimeMatrix(currentRegime) {
+  document.getElementById("regimeMatrix").querySelector("tbody").innerHTML = REGIME_ACTIONS.map(r => `
+    <tr class="${r.regime === currentRegime ? "current-regime" : ""}">
+      <td>${r.emoji} ${r.regime}</td>
+      <td>${r.leap}</td><td>${r.pmcc}</td><td>${r.csp}</td><td>${r.dca}</td>
+    </tr>`).join("");
+}
+
+/** Live "Recommendations" panel: today's regime's own row from
+ * REGIME_ACTIONS, rendered as 4 labeled cards rather than a table row (this
+ * is the one regime a viewer actually needs to act on right now). */
+function updateRecommendations(regime) {
+  const el = document.getElementById("recoCurrent");
+  const row = REGIME_ACTIONS.find(r => r.regime === regime);
+  if (!row) { el.innerHTML = `<p style="color:var(--muted)">regime not available yet</p>`; return; }
+  el.innerHTML = `
+    <div class="reco-item"><div class="k">New LEAP</div><div class="v">${row.leap}</div></div>
+    <div class="reco-item"><div class="k">PMCC</div><div class="v">${row.pmcc}</div></div>
+    <div class="reco-item"><div class="k">Wheel CSP</div><div class="v">${row.csp}</div></div>
+    <div class="reco-item"><div class="k">QQQ DCA</div><div class="v">${row.dca}</div></div>
+  ` + `<div class="reco-note">Based on today's ${row.emoji} ${row.regime} regime -- see the
+    regime-action matrix below for every regime. Suggestions only, not investment advice.</div>`;
+}
+
 /** Updates the "Strong Bull/Bull/Sideways/Bear/Strong Bear" badge above the
  * snapshot table from the slow score + market_regime the API returns. */
 function updateRegimeBadge(s) {
@@ -944,6 +1024,8 @@ async function refreshMacro() {
   `;
   updateRegimeBadge(s);
   updateRegimeHistory(s.regime_history);
+  updateRecommendations(s.market_regime);
+  renderRegimeMatrix(s.market_regime);
   document.getElementById("macroAsOf").textContent =
     d.as_of ? "as of " + new Date(d.as_of).toLocaleString() : "not computed yet -- check back shortly";
 }
