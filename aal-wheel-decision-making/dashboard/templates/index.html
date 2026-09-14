@@ -285,6 +285,28 @@
       </section>
     </div>
     <footer>
+      <table class="legend">
+        <caption style="text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;
+          letter-spacing:.04em;padding-bottom:6px">Regime legend &mdash; checked top to bottom;
+          the first match wins</caption>
+        <thead><tr><th>Regime</th><th>Condition</th></tr></thead>
+        <tbody>
+          <tr><td><span class="pct-pill" style="background:rgba(88,166,255,.30);color:var(--accent)">▲ Bullish Reversal</span></td>
+            <td>bullish_reversal_count &gt;= 4/5 AND slow_score &lt;= -2</td></tr>
+          <tr><td><span class="pct-pill" style="background:rgba(88,166,255,.30);color:var(--accent)">▼ Bearish Reversal</span></td>
+            <td>bearish_reversal_count &gt;= 4/5 AND slow_score &gt;= 2</td></tr>
+          <tr><td><span class="pct-pill pct-strong-hi">Strong Bull</span></td>
+            <td>slow_score &gt;= 3 AND ADX &gt;= 25</td></tr>
+          <tr><td><span class="pct-pill pct-hi">Bull</span></td>
+            <td>slow_score &gt;= 2 AND ADX &lt; 25</td></tr>
+          <tr><td><span class="pct-pill pct-mid">Sideways</span></td>
+            <td>none of the other 6 conditions hold</td></tr>
+          <tr><td><span class="pct-pill pct-lo">Bear</span></td>
+            <td>slow_score &lt;= -2 AND ADX &lt; 25</td></tr>
+          <tr><td><span class="pct-pill pct-strong-lo">Strong Bear</span></td>
+            <td>slow_score &lt;= -3 AND ADX &gt;= 25</td></tr>
+        </tbody>
+      </table>
       <ul>
         <li><b>50 DMA / 200 DMA</b> come straight from Yahoo's own
           <code>fiftyDayAverage</code>/<code>twoHundredDayAverage</code> fields -- fetched, not
@@ -337,7 +359,7 @@
           <span class="pct-pill pct-strong-lo">Strong Bear</span> (score &le;-3, ADX &ge;25),
           <span class="pct-pill pct-lo">Bear</span> (score &le;-2, ADX &lt;25), else
           <span class="pct-pill pct-mid">Sideways</span> -- 7 possible labels in total (see the
-          legend table below).</li>
+          legend table above).</li>
         <li>The small tags next to the regime badge show the last 3 days' regimes (oldest first,
           re-derived by re-running the exact same classification against each day's own
           historical values) -- a quick visual check for whether the label above is a stable read
@@ -346,28 +368,6 @@
         <li>Everything on this tab refreshes in the background every 30 minutes. Not investment
           advice.</li>
       </ul>
-      <table class="legend">
-        <caption style="text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;
-          letter-spacing:.04em;padding-bottom:6px">Regime legend &mdash; checked top to bottom;
-          the first match wins</caption>
-        <thead><tr><th>Regime</th><th>Condition</th></tr></thead>
-        <tbody>
-          <tr><td><span class="pct-pill" style="background:rgba(88,166,255,.30);color:var(--accent)">▲ Bullish Reversal</span></td>
-            <td>bullish_reversal_count &gt;= 4/5 AND slow_score &lt;= -2</td></tr>
-          <tr><td><span class="pct-pill" style="background:rgba(88,166,255,.30);color:var(--accent)">▼ Bearish Reversal</span></td>
-            <td>bearish_reversal_count &gt;= 4/5 AND slow_score &gt;= 2</td></tr>
-          <tr><td><span class="pct-pill pct-strong-hi">Strong Bull</span></td>
-            <td>slow_score &gt;= 3 AND ADX &gt;= 25</td></tr>
-          <tr><td><span class="pct-pill pct-hi">Bull</span></td>
-            <td>slow_score &gt;= 2 AND ADX &lt; 25</td></tr>
-          <tr><td><span class="pct-pill pct-mid">Sideways</span></td>
-            <td>none of the other 6 conditions hold</td></tr>
-          <tr><td><span class="pct-pill pct-lo">Bear</span></td>
-            <td>slow_score &lt;= -2 AND ADX &lt; 25</td></tr>
-          <tr><td><span class="pct-pill pct-strong-lo">Strong Bear</span></td>
-            <td>slow_score &lt;= -3 AND ADX &gt;= 25</td></tr>
-        </tbody>
-      </table>
     </footer>
   </div>
 </div>
