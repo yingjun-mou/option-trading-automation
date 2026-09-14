@@ -389,6 +389,18 @@ unrelated to any single stock's option chain:
     the 850-symbol scan: one symbol's history, one `Ticker.info`, two index
     closes, and ~100 more symbols' history via 2 batched downloads for
     breadth.
+- **Recommendations** panel + **regime-action matrix**
+  (`dashboard/templates/index.html`'s `REGIME_ACTIONS`) -- unlike everything
+  else on this tab, this is a **static lookup table**, not a computed
+  signal: 4 portfolio actions (New LEAP entries, the PMCC short-call leg,
+  Wheel CSP sizing, and the QQQ DCA multiplier on a 1&times; baseline) for
+  each of the 7 regimes, translated from the user's own regime-action
+  matrix. The Recommendations panel shows just today's live regime's row as
+  4 cards; the footer's regime-action matrix shows all 7 rows (row order
+  and emoji exactly as given, not resorted into score order) with today's
+  row highlighted. Both render from the one `REGIME_ACTIONS` array so the
+  two views can't drift out of sync. Suggestions only -- not investment
+  advice, decide and execute manually, same as the rest of this dashboard.
 
 ## Strategy legs
 
