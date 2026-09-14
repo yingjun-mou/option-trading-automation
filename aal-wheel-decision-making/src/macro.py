@@ -27,7 +27,14 @@ from one internally-consistent rolling SMA calculation over freely-fetched
 OHLC history, deliberately kept separate from the snapshot table's
 Yahoo-fetched fifty_dma/two_hundred_dma above (mixing a fetched "today"
 value with a locally-computed 20-day-old one would make the slope's own
-denominator inconsistent with its numerator)."""
+denominator inconsistent with its numerator).
+
+The tier-2 "reversal" counts (see `_reversal_parts`) reuse tier 1's SMA50
+and need one more of their own (SMA20), plus ADX's own value *10 trading
+days ago* for its momentum condition -- same "no fetched field gives a
+historical value" situation as Slope_200, so `_directional_movement` now
+returns full ADX/+DI/-DI series (not just today's value) precisely so this
+module can read both today's and 10-days-ago's ADX off the one calculation."""
 
 from __future__ import annotations
 
@@ -62,6 +69,19 @@ SLOPE_200_UP = 0.005
 SLOPE_200_DOWN = -0.005
 REGIME_ADX_THRESHOLD = 25
 
+# Tier-2 "reversal" counts: 5 plain strict-inequality conditions (no
+# percentage-band neutral zone, except the ADX-momentum one), each
+# contributing to a bullish-tilt count OR a bearish-tilt count (never both)
+# -- see _reversal_parts. A reversal regime only fires against an opposing
+# tier-1 score (bullish reversal needs slow_score<=-2, bearish needs >=2),
+# so these are kept as two separate 0-5 counts rather than netted into one
+# signed score the way the slow score is.
+REVERSAL_SMA20_WINDOW = 20
+REVERSAL_ADX_MOMENTUM_LOOKBACK = 10   # trading days
+REVERSAL_ADX_MOMENTUM_UP = 3.0
+REVERSAL_ADX_MOMENTUM_DOWN = -3.0
+REVERSAL_COUNT_THRESHOLD = 4          # out of 5, either direction
+
 # Breadth = % of Nasdaq-100 members trading above their own 200-day SMA.
 # Wikipedia moved this table at some point from the "Nasdaq-100" article
 # itself to this dedicated page -- note the capitalization, MediaWiki titles
@@ -76,19 +96,22 @@ BREADTH_CHUNK_GAP = 1.5
 
 # Bump whenever compute_macro_signals()'s return shape changes -- same
 # stale-cache guard as iv_rank.SCHEMA_VERSION, see that constant's note.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _directional_movement(high: pd.Series, low: pd.Series, close: pd.Series,
-                          n: int = ADX_WINDOW) -> tuple[float | None, float | None, float | None]:
-    """Wilder's-smoothing (adx, plus_di, minus_di) -- ADX(n) plus its two
-    directional components: +DI/-DI say whether rising momentum (+DM) or
-    falling momentum (-DM) currently dominates, which is what the slow
-    score's "+DI>-DI" condition below actually reads. Approximated the same
-    way this project's existing RSI does (`.ewm(alpha=1/n, adjust=False)` in
-    place of Wilder's classic simple-average seed) -- a standard,
-    widely-used approximation, not a from-scratch indicator design.
-    (None, None, None) with too little history."""
+                          n: int = ADX_WINDOW) -> tuple[pd.Series | None, pd.Series | None, pd.Series | None]:
+    """Wilder's-smoothing (adx_series, plus_di_series, minus_di_series) --
+    ADX(n) plus its two directional components: +DI/-DI say whether rising
+    momentum (+DM) or falling momentum (-DM) currently dominates, which is
+    what both tiers' "+DI vs -DI" condition actually reads. Returns full
+    Series (not just today's value) so callers can read off both today's ADX
+    and its value N days ago (the tier-2 reversal score's ADX-momentum
+    condition) from one calculation. Approximated the same way this
+    project's existing RSI does (`.ewm(alpha=1/n, adjust=False)` in place of
+    Wilder's classic simple-average seed) -- a standard, widely-used
+    approximation, not a from-scratch indicator design. (None, None, None)
+    with too little history."""
     if len(close) < n * 2:
         return None, None, None
     up_move = high.diff()
@@ -105,11 +128,28 @@ def _directional_movement(high: pd.Series, low: pd.Series, close: pd.Series,
     plus_di_series = 100 * pd.Series(plus_dm, index=high.index).ewm(alpha=1 / n, adjust=False).mean() / atr
     minus_di_series = 100 * pd.Series(minus_dm, index=high.index).ewm(alpha=1 / n, adjust=False).mean() / atr
     dx = 100 * (plus_di_series - minus_di_series).abs() / (plus_di_series + minus_di_series)
-    adx = dx.ewm(alpha=1 / n, adjust=False).mean().iloc[-1]
-    plus_di, minus_di = plus_di_series.iloc[-1], minus_di_series.iloc[-1]
-    return (float(adx) if pd.notna(adx) else None,
-            float(plus_di) if pd.notna(plus_di) else None,
-            float(minus_di) if pd.notna(minus_di) else None)
+    adx_series = dx.ewm(alpha=1 / n, adjust=False).mean()
+    return adx_series, plus_di_series, minus_di_series
+
+
+def _last(series: pd.Series | None) -> float | None:
+    """series.iloc[-1] as a plain float, or None if `series` is None/empty/NaN."""
+    if series is None or series.empty:
+        return None
+    v = series.iloc[-1]
+    return float(v) if pd.notna(v) else None
+
+
+def _change_over(series: pd.Series | None, lookback: int) -> float | None:
+    """series[-1] - series[-lookback-1] (an absolute difference, not a
+    ratio -- unlike _slope_200, ADX momentum is specified in ADX points, not
+    percent), or None with too little history."""
+    if series is None or len(series) < lookback + 1:
+        return None
+    now, past = series.iloc[-1], series.iloc[-1 - lookback]
+    if pd.isna(now) or pd.isna(past):
+        return None
+    return float(now - past)
 
 
 def _six_month_return(close: pd.Series) -> float | None:
@@ -177,17 +217,71 @@ def _slow_score(price: float | None, sma50: float | None, sma200: float | None,
     return sum(parts.values()), parts
 
 
-def _classify_regime(slow_score: int | None, adx: float | None) -> str | None:
-    """Strong Bull/Bull/Sideways/Bear/Strong Bear from the slow score + ADX,
-    per the user's explicit table. The four named bands don't overlap (score
-    can't be both >=3 and <=-3; ADX can't be both >=25 and <25), so order
-    doesn't matter among them -- "Sideways" is genuinely everything else,
-    including e.g. a score of +2 alongside a >=25 ADX (a real gap in the
-    literal rules as given: strong-trend-confirmed but the score itself
-    isn't high enough to call it a Strong Bull), not just the "no score"
-    middle ground."""
+def _reversal_parts(price: float | None, sma20: float | None, sma50: float | None,
+                    plus_di: float | None, minus_di: float | None,
+                    adx_momentum: float | None) -> dict:
+    """Tier-2 reversal: per-measure +1 (bullish-tilt) / -1 (bearish-tilt) / 0
+    for the 5 measures behind both reversal counts -- the user's bullish and
+    bearish condition lists are exact mirrors of the same 5 measures (Price
+    vs SMA20, Price vs SMA50, SMA20 vs SMA50, +DI vs -DI, ADX momentum), so
+    one bucket per measure serves both: _reversal_counts below just tallies
+    which sign each bucket landed on. Unlike the slow score's ratio-based
+    _bucket, these are plain strict inequalities with no percentage-band
+    neutral zone -- except ADX momentum, which does have a real neutral band
+    (-3..+3 ADX points) per the given thresholds."""
+    def _cmp(a: float | None, b: float | None) -> int:
+        if a is None or b is None:
+            return 0
+        if a > b:
+            return 1
+        if a < b:
+            return -1
+        return 0
+
+    return {
+        "price_vs_sma20": _cmp(price, sma20),
+        "price_vs_sma50": _cmp(price, sma50),
+        "sma20_vs_sma50": _cmp(sma20, sma50),
+        "directional": _cmp(plus_di, minus_di),
+        "adx_momentum": (0 if adx_momentum is None
+                        else (1 if adx_momentum > REVERSAL_ADX_MOMENTUM_UP
+                              else (-1 if adx_momentum < REVERSAL_ADX_MOMENTUM_DOWN else 0))),
+    }
+
+
+def _reversal_counts(parts: dict) -> tuple[int, int]:
+    """(bullish-tilt count, bearish-tilt count), each 0-5 -- how many of the
+    5 reversal measures landed on each side. A measure with no valid data
+    (bucket 0) counts toward neither."""
+    bullish = sum(1 for v in parts.values() if v > 0)
+    bearish = sum(1 for v in parts.values() if v < 0)
+    return bullish, bearish
+
+
+def _classify_regime(slow_score: int | None, adx: float | None,
+                     bullish_reversal_count: int | None = None,
+                     bearish_reversal_count: int | None = None) -> str | None:
+    """Strong Bull/Bull/Sideways/Bear/Strong Bear from the slow score + ADX
+    (tier 1), or Bullish/Bearish Reversal (tier 2) when a reversal count hits
+    its threshold against an opposing tier-1 score. Reversal is checked
+    first and, when it fires, overrides the tier-1 label entirely -- so up
+    to 7 distinct labels are possible in total, not just the 5 tier-1 bands.
+    Within each tier, the named bands don't overlap (score can't be both
+    >=3 and <=-3; ADX can't be both >=25 and <25; a bullish reversal needs
+    slow_score<=-2 while a bearish one needs >=2, mutually exclusive), so
+    order only matters *between* the two tiers -- "Sideways" is genuinely
+    everything left over, including e.g. a score of +2 alongside a >=25 ADX
+    (a real gap in the literal tier-1 rules: strong-trend-confirmed but the
+    score itself isn't high enough for a Strong Bull), not just the "no
+    score" middle ground."""
     if slow_score is None or adx is None:
         return None
+    if (bullish_reversal_count is not None and bullish_reversal_count >= REVERSAL_COUNT_THRESHOLD
+            and slow_score <= -2):
+        return "Bullish Reversal"
+    if (bearish_reversal_count is not None and bearish_reversal_count >= REVERSAL_COUNT_THRESHOLD
+            and slow_score >= 2):
+        return "Bearish Reversal"
     if slow_score >= 3 and adx >= REGIME_ADX_THRESHOLD:
         return "Strong Bull"
     if slow_score >= 2 and adx < REGIME_ADX_THRESHOLD:
@@ -339,7 +433,11 @@ def compute_macro_signals() -> dict:
             if ret_6m is not None:
                 out["qqq_return_6m"] = ret_6m
 
-            adx, plus_di, minus_di = _directional_movement(hist["High"], hist["Low"], close)
+            adx_series, plus_di_series, minus_di_series = _directional_movement(
+                hist["High"], hist["Low"], close)
+            adx = _last(adx_series)
+            plus_di = _last(plus_di_series)
+            minus_di = _last(minus_di_series)
             if adx is not None:
                 out["adx_14"] = adx
             if plus_di is not None:
@@ -347,14 +445,17 @@ def compute_macro_signals() -> dict:
             if minus_di is not None:
                 out["minus_di_14"] = minus_di
 
-            # Slow score's own SMA50/SMA200 -- deliberately separate from
+            # Slow score's (tier 1) own SMA50/SMA200, and the reversal
+            # score's (tier 2) own SMA20 -- all deliberately separate from
             # fifty_dma/two_hundred_dma above, see this module's docstring.
+            sma20_series = close.rolling(REVERSAL_SMA20_WINDOW).mean()
             sma50_series = close.rolling(SLOW_SCORE_SMA50_WINDOW).mean()
             sma200_series = close.rolling(SLOW_SCORE_SMA200_WINDOW).mean()
-            sma50_calc = sma50_series.iloc[-1] if not sma50_series.empty else None
-            sma200_calc = sma200_series.iloc[-1] if not sma200_series.empty else None
-            sma50_calc = float(sma50_calc) if pd.notna(sma50_calc) else None
-            sma200_calc = float(sma200_calc) if pd.notna(sma200_calc) else None
+            sma20_calc = _last(sma20_series)
+            sma50_calc = _last(sma50_series)
+            sma200_calc = _last(sma200_series)
+            if sma20_calc is not None:
+                out["sma20_calc"] = sma20_calc
             if sma50_calc is not None:
                 out["sma50_calc"] = sma50_calc
             if sma200_calc is not None:
@@ -368,7 +469,19 @@ def compute_macro_signals() -> dict:
                 price, sma50_calc, sma200_calc, slope_200, plus_di, minus_di)
             out["slow_score"] = slow_score
             out["slow_score_parts"] = slow_score_parts
-            regime = _classify_regime(slow_score, adx)
+
+            adx_momentum_10 = _change_over(adx_series, REVERSAL_ADX_MOMENTUM_LOOKBACK)
+            if adx_momentum_10 is not None:
+                out["adx_momentum_10"] = adx_momentum_10
+
+            reversal_parts = _reversal_parts(
+                price, sma20_calc, sma50_calc, plus_di, minus_di, adx_momentum_10)
+            bullish_reversal_count, bearish_reversal_count = _reversal_counts(reversal_parts)
+            out["reversal_parts"] = reversal_parts
+            out["bullish_reversal_count"] = bullish_reversal_count
+            out["bearish_reversal_count"] = bearish_reversal_count
+
+            regime = _classify_regime(slow_score, adx, bullish_reversal_count, bearish_reversal_count)
             if regime is not None:
                 out["market_regime"] = regime
     except Exception:
