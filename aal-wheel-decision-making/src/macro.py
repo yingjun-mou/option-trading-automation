@@ -34,7 +34,16 @@ and need one more of their own (SMA20), plus ADX's own value *10 trading
 days ago* for its momentum condition -- same "no fetched field gives a
 historical value" situation as Slope_200, so `_directional_movement` now
 returns full ADX/+DI/-DI series (not just today's value) precisely so this
-module can read both today's and 10-days-ago's ADX off the one calculation."""
+module can read both today's and 10-days-ago's ADX off the one calculation.
+
+`_regime_history` reuses that same "read an earlier point off an already-
+computed Series" trick one step further: it re-runs the *entire*
+classification (both tiers + `_classify_regime`) as of each of the last
+`REGIME_HISTORY_DAYS` trading days, not just today, so the Macro tab can
+show whether the regime has been stable or flip-flopping -- large swings in
+either score can flip the labeled regime day to day even when the
+underlying trend hasn't really changed, and that's exactly the kind of
+noise a single "as of today" label can't reveal on its own."""
 
 from __future__ import annotations
 
@@ -82,6 +91,11 @@ REVERSAL_ADX_MOMENTUM_UP = 3.0
 REVERSAL_ADX_MOMENTUM_DOWN = -3.0
 REVERSAL_COUNT_THRESHOLD = 4          # out of 5, either direction
 
+# How many extra days (before today) the Macro tab shows as small "regime
+# history" tags, so a flip-flopping classification is visible at a glance
+# rather than only ever showing today's possibly-noisy snapshot.
+REGIME_HISTORY_DAYS = 3
+
 # Breadth = % of Nasdaq-100 members trading above their own 200-day SMA.
 # Wikipedia moved this table at some point from the "Nasdaq-100" article
 # itself to this dedicated page -- note the capitalization, MediaWiki titles
@@ -96,7 +110,7 @@ BREADTH_CHUNK_GAP = 1.5
 
 # Bump whenever compute_macro_signals()'s return shape changes -- same
 # stale-cache guard as iv_rank.SCHEMA_VERSION, see that constant's note.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def _directional_movement(high: pd.Series, low: pd.Series, close: pd.Series,
@@ -132,21 +146,27 @@ def _directional_movement(high: pd.Series, low: pd.Series, close: pd.Series,
     return adx_series, plus_di_series, minus_di_series
 
 
-def _last(series: pd.Series | None) -> float | None:
-    """series.iloc[-1] as a plain float, or None if `series` is None/empty/NaN."""
-    if series is None or series.empty:
+def _at(series: pd.Series | None, offset: int = 0) -> float | None:
+    """series.iloc[-1-offset] as a plain float -- offset=0 (default) is
+    "today" (the most recent bar); offset=k reads the value as of k trading
+    days before today, used to recompute past regimes for the Macro tab's
+    "last N days" history strip (see _regime_history). None if `series` is
+    None, too short, or the value itself is NaN."""
+    if series is None or len(series) <= offset:
         return None
-    v = series.iloc[-1]
+    v = series.iloc[-1 - offset]
     return float(v) if pd.notna(v) else None
 
 
-def _change_over(series: pd.Series | None, lookback: int) -> float | None:
-    """series[-1] - series[-lookback-1] (an absolute difference, not a
-    ratio -- unlike _slope_200, ADX momentum is specified in ADX points, not
-    percent), or None with too little history."""
-    if series is None or len(series) < lookback + 1:
+def _change_over(series: pd.Series | None, lookback: int, offset: int = 0) -> float | None:
+    """series[-1-offset] - series[-1-offset-lookback] (an absolute
+    difference, not a ratio -- unlike _slope_200, ADX momentum is specified
+    in ADX points, not percent). `offset` re-derives the same measure as of
+    `offset` trading days before today, same as _at. None with too little
+    history."""
+    if series is None or len(series) < offset + lookback + 1:
         return None
-    now, past = series.iloc[-1], series.iloc[-1 - lookback]
+    now, past = series.iloc[-1 - offset], series.iloc[-1 - offset - lookback]
     if pd.isna(now) or pd.isna(past):
         return None
     return float(now - past)
@@ -165,10 +185,12 @@ def _six_month_return(close: pd.Series) -> float | None:
     return (end / start) - 1.0 if start else None
 
 
-def _slope_200(sma200: pd.Series, lookback: int = SLOW_SCORE_SLOPE_LOOKBACK) -> float | None:
+def _slope_200(sma200: pd.Series, lookback: int = SLOW_SCORE_SLOPE_LOOKBACK,
+               offset: int = 0) -> float | None:
     """SMA200(t)/SMA200(t-lookback) - 1 -- positive when the 200-day average
     has been rising over the last `lookback` trading days (bullish), negative
-    when falling (bearish).
+    when falling (bearish). `offset` shifts "t" itself back `offset` trading
+    days from today (see _at), used to recompute past regimes.
 
     NOTE on direction: the request that specified this score wrote the ratio
     the other way around (SMA200(t-lookback)/SMA200(t) - 1). Taken literally,
@@ -181,9 +203,9 @@ def _slope_200(sma200: pd.Series, lookback: int = SLOW_SCORE_SLOPE_LOOKBACK) -> 
     scorecard internally consistent; flagged explicitly rather than silently
     guessed -- flip this fraction if the literal formula was actually
     intended."""
-    if len(sma200) < lookback + 1:
+    if len(sma200) < offset + lookback + 1:
         return None
-    now, past = sma200.iloc[-1], sma200.iloc[-1 - lookback]
+    now, past = sma200.iloc[-1 - offset], sma200.iloc[-1 - offset - lookback]
     if pd.isna(now) or pd.isna(past) or not past:
         return None
     return float(now / past - 1.0)
@@ -291,6 +313,53 @@ def _classify_regime(slow_score: int | None, adx: float | None,
     if slow_score <= -2 and adx < REGIME_ADX_THRESHOLD:
         return "Bear"
     return "Sideways"
+
+
+def _regime_at(offset: int, close: pd.Series, sma20_series: pd.Series, sma50_series: pd.Series,
+               sma200_series: pd.Series, adx_series: pd.Series | None,
+               plus_di_series: pd.Series | None, minus_di_series: pd.Series | None) -> str | None:
+    """Recomputes the full tier-1 + tier-2 + regime classification as of
+    `offset` trading days before today, by re-running the exact same
+    functions compute_macro_signals uses for today against each series'
+    value `offset` days back instead of always the latest bar. `offset=0` is
+    today (identical to what compute_macro_signals computes inline)."""
+    price = _at(close, offset)
+    sma20 = _at(sma20_series, offset)
+    sma50 = _at(sma50_series, offset)
+    sma200 = _at(sma200_series, offset)
+    adx = _at(adx_series, offset)
+    plus_di = _at(plus_di_series, offset)
+    minus_di = _at(minus_di_series, offset)
+
+    slope_200 = _slope_200(sma200_series, offset=offset)
+    adx_momentum = _change_over(adx_series, REVERSAL_ADX_MOMENTUM_LOOKBACK, offset=offset)
+
+    slow_score, _ = _slow_score(price, sma50, sma200, slope_200, plus_di, minus_di)
+    reversal_parts = _reversal_parts(price, sma20, sma50, plus_di, minus_di, adx_momentum)
+    bullish_count, bearish_count = _reversal_counts(reversal_parts)
+    return _classify_regime(slow_score, adx, bullish_count, bearish_count)
+
+
+def _regime_history(close: pd.Series, sma20_series: pd.Series, sma50_series: pd.Series,
+                    sma200_series: pd.Series, adx_series: pd.Series | None,
+                    plus_di_series: pd.Series | None, minus_di_series: pd.Series | None,
+                    days: int = REGIME_HISTORY_DAYS) -> list[dict]:
+    """[{"date": ..., "regime": ...}, ...] for the `days` trading days before
+    today, oldest first -- so a flip-flopping classification (e.g. Bull,
+    Sideways, Bull, Bear across 4 days) is visible at a glance on the Macro
+    tab rather than only ever showing today's possibly-noisy snapshot. Skips
+    a day entirely (rather than emitting a None-regime entry) if there isn't
+    enough history that far back yet."""
+    out = []
+    for offset in range(days, 0, -1):
+        if len(close) <= offset:
+            continue
+        regime = _regime_at(offset, close, sma20_series, sma50_series, sma200_series,
+                            adx_series, plus_di_series, minus_di_series)
+        if regime is None:
+            continue
+        out.append({"date": str(close.index[-1 - offset].date()), "regime": regime})
+    return out
 
 
 def _last_close(symbol: str) -> float | None:
@@ -435,9 +504,9 @@ def compute_macro_signals() -> dict:
 
             adx_series, plus_di_series, minus_di_series = _directional_movement(
                 hist["High"], hist["Low"], close)
-            adx = _last(adx_series)
-            plus_di = _last(plus_di_series)
-            minus_di = _last(minus_di_series)
+            adx = _at(adx_series)
+            plus_di = _at(plus_di_series)
+            minus_di = _at(minus_di_series)
             if adx is not None:
                 out["adx_14"] = adx
             if plus_di is not None:
@@ -451,9 +520,9 @@ def compute_macro_signals() -> dict:
             sma20_series = close.rolling(REVERSAL_SMA20_WINDOW).mean()
             sma50_series = close.rolling(SLOW_SCORE_SMA50_WINDOW).mean()
             sma200_series = close.rolling(SLOW_SCORE_SMA200_WINDOW).mean()
-            sma20_calc = _last(sma20_series)
-            sma50_calc = _last(sma50_series)
-            sma200_calc = _last(sma200_series)
+            sma20_calc = _at(sma20_series)
+            sma50_calc = _at(sma50_series)
+            sma200_calc = _at(sma200_series)
             if sma20_calc is not None:
                 out["sma20_calc"] = sma20_calc
             if sma50_calc is not None:
@@ -484,6 +553,10 @@ def compute_macro_signals() -> dict:
             regime = _classify_regime(slow_score, adx, bullish_reversal_count, bearish_reversal_count)
             if regime is not None:
                 out["market_regime"] = regime
+
+            out["regime_history"] = _regime_history(
+                close, sma20_series, sma50_series, sma200_series,
+                adx_series, plus_di_series, minus_di_series)
     except Exception:
         pass
 

@@ -372,6 +372,17 @@ unrelated to any single stock's option chain:
     Per the literal rules, "Sideways" also catches gaps like a +2 score
     alongside a &ge;25 ADX (strong-trend-confirmed but not a high enough
     score for either Bull tier), not just genuinely flat readings.
+  - **Regime history** (`_regime_history` in `src/macro.py`): the Macro tab
+    shows the last `REGIME_HISTORY_DAYS` (3) days' regimes as small tags
+    next to today's badge, oldest first, so a flip-flopping classification
+    is visible at a glance -- a single day's noisy swing in either score can
+    flip the labeled regime even when the underlying trend hasn't really
+    changed. Each historical day is a genuine **re-run of the full
+    classification** (`_regime_at`) against that day's own values off the
+    already-computed SMA20/50/200, ADX, +DI, -DI Series -- not a cached
+    label from some other source -- which is why `_at`/`_change_over`/
+    `_slope_200` all took an `offset` parameter (0 = today, k = k trading
+    days back) rather than always hardcoding `.iloc[-1]`.
   - Unlike `IvRankJob`'s ~daily cadence, `MacroJob` refreshes every 30
     minutes -- QQQ/VIX/breadth genuinely move during the trading day unlike
     the scanner's slower-moving per-stock signals. Still cheap relative to
@@ -414,7 +425,7 @@ or dataclass to the next.
 | `scanner_job.py` | Background loop that owns the scan cadence, disk cache, and manual-refresh wake-up for the dashboard; merges in `iv_rank_pct` from an injected provider. |
 | `iv_rank.py` | `compute_market_signals(symbols)` -- the realized-vol-percentile proxy for IV Rank, each symbol's trailing closes (for the live Price %ile column), raw `rv_30` (for the IV/RV column), `iv_rv_pct` (that ratio's own 3-month percentile), and `rsi_14`, all batched via one `yf.download` per symbol. `compute_forward_pe(symbols)` -- forward P/E, sequential (no batch endpoint for fundamentals). Carries `SCHEMA_VERSION` for `IvRankJob`'s cache-invalidation check. |
 | `iv_rank_job.py` | Background loop maintaining that proxy on its own slow (~daily) cadence, decoupled from the option scan. |
-| `macro.py` | `compute_macro_signals()` -- QQQ price + Yahoo's own 50/200-day averages, the 6-month return, ADX(14) + its +DI/-DI, the VIX/VIX3M term structure, Nasdaq-100 breadth, the tier-1 slow score, the tier-2 reversal counts, and the combined 7-way market regime classification (ADX/breadth/both tiers' own SMA20/SMA50/SMA200 are computed here rather than fetched -- see "Macro tab" above). |
+| `macro.py` | `compute_macro_signals()` -- QQQ price + Yahoo's own 50/200-day averages, the 6-month return, ADX(14) + its +DI/-DI, the VIX/VIX3M term structure, Nasdaq-100 breadth, the tier-1 slow score, the tier-2 reversal counts, the combined 7-way market regime classification, and (`_regime_history`) that same classification re-run over the last few days for the tab's "flip-flop" check (ADX/breadth/both tiers' own SMA20/SMA50/SMA200 are computed here rather than fetched -- see "Macro tab" above). |
 | `macro_job.py` | Background loop refreshing that snapshot every 30 minutes, cached to `realtime_data/macro_cache.json`. |
 | `pricing.py` | Black-Scholes price, greeks, implied-vol solve. |
 | `features.py` | Daily features from `MarketData`: rolling 3Y/1Y price percentile (main signal), realised vol, IV percentile, momentum. |
