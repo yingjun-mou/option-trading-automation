@@ -301,17 +301,17 @@
       <section class="panel col1-bottom">
         <h2>US 10-year real yield (TIPS)</h2>
         <div class="reco-note" id="treasuryLatest" style="margin:0 0 6px">loading ...</div>
-        <div class="tv-chart-container">
-          <svg id="treasuryChart" viewBox="0 0 600 260" preserveAspectRatio="none"
-            style="width:100%;height:100%"></svg>
-        </div>
+        <div class="tv-chart-container"><div id="treasuryChart" style="width:100%;height:100%"></div></div>
         <div class="chart-note">10-year Treasury Inflation-Protected Securities (TIPS)
           constant-maturity yield -- the standard "real" (inflation-adjusted) long-term rate,
           distinct from the nominal 10Y Treasury yield. Fetched directly from FRED
-          (<code>DFII10</code>) and drawn here, not a TradingView embed like the chart above --
-          their free embed widget doesn't carry this symbol (confirmed live: it refuses with
-          "this symbol is only available on TradingView"). Still fetched, not computed: the Fed
-          publishes this series directly, this app only connects the points.</div>
+          (<code>DFII10</code>) -- not a TradingView chart <i>embed</i> like the one above (their
+          free embed widget doesn't carry this symbol: confirmed live, it refuses with "this
+          symbol is only available on TradingView"). Rendered instead with TradingView's separate
+          open-source <a href="https://tradingview.github.io/lightweight-charts/" target="_blank"
+          rel="noopener noreferrer">Lightweight Charts</a> library, fed the fetched FRED points --
+          scroll/pinch to zoom, drag to pan, hover for the crosshair's exact date/value. Still
+          fetched, not computed: the Fed publishes this series directly, this app only draws it.</div>
       </section>
 
       <section class="panel col2">
@@ -825,14 +825,26 @@ setInterval(refreshScan, 15000);
 // reason to load a third-party script before the user ever looks at this
 // tab). The real-yield chart below it is NOT a TradingView embed -- their
 // free widget doesn't carry FRED:DFII10 (confirmed live: it refuses with
-// "this symbol is only available on TradingView") -- see drawTreasuryChart.
+// "this symbol is only available on TradingView") -- it's rendered with
+// TradingView's separate, open-source Lightweight Charts library instead
+// (a plain client-side renderer with no data of its own -- no such
+// restriction applies since this app supplies the data), fed the FRED
+// points this app already fetches server-side. That library gives zoom
+// (wheel/pinch), pan (drag), and a crosshair with live axis labels for
+// free -- no hand-rolled interaction code needed (see drawTreasuryChart).
 let macroChartInited = false;
+let treasuryChart = null;
+let treasurySeries = null;
+let treasuryChartFitted = false;
+let pendingTreasuryData = null;   // data that arrived before the chart lib finished loading
+
 function initMacroChart() {
   if (macroChartInited) return;
   macroChartInited = true;
-  const s = document.createElement("script");
-  s.src = "https://s3.tradingview.com/tv.js";
-  s.onload = () => {
+
+  const tv = document.createElement("script");
+  tv.src = "https://s3.tradingview.com/tv.js";
+  tv.onload = () => {
     new TradingView.widget({
       autosize: true,
       symbol: "NASDAQ:QQQ",
@@ -851,7 +863,39 @@ function initMacroChart() {
       container_id: "tvChart",
     });
   };
-  document.body.appendChild(s);
+  document.body.appendChild(tv);
+
+  const lw = document.createElement("script");
+  lw.src = "https://cdn.jsdelivr.net/npm/lightweight-charts@5.2.1/dist/lightweight-charts.standalone.production.js";
+  lw.onload = () => {
+    treasuryChart = LightweightCharts.createChart(document.getElementById("treasuryChart"), {
+      layout: { background: { color: "transparent" }, textColor: "#9aa4b2" },
+      grid: { vertLines: { color: "#262b36" }, horzLines: { color: "#262b36" } },
+      rightPriceScale: { borderColor: "#262b36" },
+      timeScale: { borderColor: "#262b36" },
+      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },   // free-floating crosshair + axis labels, not snap-to-point
+      autoSize: true,
+    });
+    treasurySeries = treasuryChart.addSeries(LightweightCharts.LineSeries, {
+      color: "#58a6ff",
+      lineWidth: 2,
+      priceFormat: { type: "custom", formatter: v => v.toFixed(2) + "%", minMove: 0.01 },
+    });
+    if (pendingTreasuryData) { setTreasuryData(pendingTreasuryData); pendingTreasuryData = null; }
+  };
+  document.body.appendChild(lw);
+}
+
+/** Pushes `data` ([{time, value}, ...]) into the treasury chart's series.
+ * fitContent() (zoom-to-fit) runs only on the very first load -- later
+ * calls (every 60s poll) just update the data in place, so a zoom/pan the
+ * viewer has set isn't reset out from under them on every refresh. */
+function setTreasuryData(data) {
+  treasurySeries.setData(data);
+  if (!treasuryChartFitted) {
+    treasuryChart.timeScale().fitContent();
+    treasuryChartFitted = true;
+  }
 }
 
 /** Green above `boundary`, red below, amber exactly at it (the "QQQ return",
@@ -975,43 +1019,27 @@ function updateRecommendations(regime) {
     regime-action matrix below for every regime. Suggestions only, not investment advice.</div>`;
 }
 
-/** Draws the US 10Y real-yield chart from `history` ([{date, value}, ...],
- * oldest first, as returned by /api/macro) -- a plain inline-SVG line, same
- * technique as the AAL Wheel tab's drawSpark() sparkline, just with axis
- * labels since this replaces what would otherwise be a TradingView embed
- * (see initMacroChart's comment for why there isn't one here). Not a
- * technical indicator -- just connects the already-fetched FRED points. */
+/** Feeds the US 10Y real-yield chart from `history` ([{date, value}, ...],
+ * oldest first, as returned by /api/macro). Rendered by Lightweight Charts,
+ * not hand-drawn SVG -- see initMacroChart's comment for why there's no
+ * TradingView embed for this one, and setTreasuryData for why fitContent()
+ * (zoom-to-fit) only runs once rather than on every 60s poll. If the chart
+ * library hasn't finished loading yet, stashes the data for initMacroChart's
+ * lw.onload to push in once it has. */
 function drawTreasuryChart(history) {
-  const svg = document.getElementById("treasuryChart");
   const latestEl = document.getElementById("treasuryLatest");
   if (!history || !history.length) {
-    svg.innerHTML = "";
     latestEl.textContent = "no data yet -- check back shortly";
     return;
   }
-  const v = history.map(h => h.value);
-  const n = v.length;
-  const W = 600, H = 260;
-  const lo = Math.min(...v), hi = Math.max(...v);
-  const pad = (hi - lo) * 0.08 || 0.1;
-  const yMin = lo - pad, yMax = hi + pad;
-  const x = i => (i / (n - 1)) * W;
-  const y = val => H - 22 - ((val - yMin) / (yMax - yMin)) * (H - 34);
-  const path = v.map((p, i) => (i ? "L" : "M") + x(i).toFixed(1) + " " + y(p).toFixed(1)).join(" ");
-  const zeroLine = (yMin < 0 && yMax > 0)
-    ? `<line x1="0" y1="${y(0).toFixed(1)}" x2="${W}" y2="${y(0).toFixed(1)}"
-        stroke="var(--muted)" stroke-dasharray="4 3" stroke-width="1"/>
-       <text x="4" y="${(y(0) - 4).toFixed(1)}" fill="var(--muted)" font-size="11">0%</text>`
-    : "";
-  svg.innerHTML = `
-    ${zeroLine}
-    <text x="4" y="14" fill="var(--muted)" font-size="11">${hi.toFixed(2)}%</text>
-    <text x="4" y="${H - 8}" fill="var(--muted)" font-size="11">${lo.toFixed(2)}%</text>
-    <text x="${W}" y="14" text-anchor="end" fill="var(--muted)" font-size="11">${history[0].date}</text>
-    <text x="${W}" y="${H - 8}" text-anchor="end" fill="var(--muted)" font-size="11">${history[n - 1].date}</text>
-    <path d="${path}" fill="none" stroke="#58a6ff" stroke-width="1.75"/>`;
-  const last = history[n - 1];
+  const data = history.map(h => ({ time: h.date, value: h.value }));
+  const last = history[history.length - 1];
   latestEl.textContent = `${last.value.toFixed(2)}% as of ${last.date}`;
+  if (treasurySeries) {
+    setTreasuryData(data);
+  } else {
+    pendingTreasuryData = data;
+  }
 }
 
 /** Updates the "Strong Bull/Bull/Sideways/Bear/Strong Bear" badge above the

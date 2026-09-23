@@ -283,22 +283,32 @@ unrelated to any single stock's option chain:
   none of it.
 - **US 10-year real yield chart** (directly below the QQQ one): the 10-year
   TIPS constant-maturity yield, FRED series `DFII10` -- the standard
-  "real" (inflation-adjusted) long-term rate. **Not** a TradingView embed
-  like the QQQ chart -- confirmed live that TradingView's free Advanced
-  Chart widget refuses this symbol ("this symbol is only available on
-  TradingView"), a restriction on their public embed product, not
-  something fixable from this side. Instead, `src/macro.py`'s
+  "real" (inflation-adjusted) long-term rate. **Not** a TradingView chart
+  *embed* like the QQQ chart -- confirmed live that TradingView's free
+  Advanced Chart widget refuses this symbol ("this symbol is only
+  available on TradingView"), a restriction on their public embed product,
+  not something fixable from this side. Instead, `src/macro.py`'s
   `_real_yield_history()` fetches the series straight from FRED's public
   `fredgraph.csv` endpoint (**no API key needed**, unlike FRED's REST API --
-  just a plain CSV download) and `index.html`'s `drawTreasuryChart()` draws
-  it with a plain inline SVG, the same technique as the AAL Wheel tab's
-  `drawSpark()` sparkline. Still "fetch, don't compute": the Fed publishes
-  this series directly, this project only connects the already-fetched
-  points. The Macro tab's `.wrap` grid needed explicit `grid-column`/
-  `grid-row` placement (`.col1-top`/`.col1-bottom`/`.col2` classes) once it
-  grew a 3rd panel -- default row-major auto-placement would put this
-  chart *beside* the QQQ chart instead of underneath it, bumping the
-  snapshot panel down instead.
+  just a plain CSV download), and `index.html` renders it with
+  TradingView's separate, open-source [Lightweight
+  Charts](https://tradingview.github.io/lightweight-charts/) library
+  (loaded from jsdelivr, pinned to `5.2.1`) instead of hand-drawn SVG --
+  that library is a plain client-side renderer with no data of its own, so
+  the FRED:DFII10 embed restriction above doesn't apply to it; this project
+  supplies the data, the library just draws it. Gets zoom (wheel/pinch),
+  pan (drag), and a crosshair with live date/value axis labels for free, no
+  hand-rolled interaction code (`initMacroChart()`'s `lw.onload` creates the
+  chart + line series once, `drawTreasuryChart()` / `setTreasuryData()` push
+  new data into it on each refresh -- `fitContent()` runs only on the very
+  first load so a viewer's zoom/pan survives the 30-minute data refresh
+  rather than being reset out from under them). Still "fetch, don't
+  compute": the Fed publishes this series directly, this project only
+  draws the already-fetched points. The Macro tab's `.wrap` grid needed
+  explicit `grid-column`/`grid-row` placement (`.col1-top`/`.col1-bottom`/
+  `.col2` classes) once it grew a 3rd panel -- default row-major
+  auto-placement would put this chart *beside* the QQQ chart instead of
+  underneath it, bumping the snapshot panel down instead.
 - **Snapshot table** (`src/macro.py`'s `compute_macro_signals()`, refreshed
   every 30 min by `src/macro_job.py`'s `MacroJob`, `realtime_data/macro_cache.json`):
   - `fifty_dma`/`two_hundred_dma` are Yahoo's own already-computed
