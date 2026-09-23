@@ -18,17 +18,19 @@
   header h1 { font-size: 15px; margin: 0; font-weight: 600; }
   header .cfg { color: var(--muted); font-size: 12px; margin-left: auto; }
   .wrap { display: grid; grid-template-columns: 1.1fr 1fr; gap: 16px; padding: 16px 20px; }
-  /* Macro tab only (3 children there vs. 2 elsewhere): pins the two charts
-     stacked in column 1 and the snapshot alone in column 2, rather than
-     relying on default row-major auto-placement -- which would put the
-     2nd DOM child (the real-yield chart) beside the QQQ chart instead of
-     underneath it, bumping the snapshot panel down instead. */
+  /* Macro tab only (4 children there vs. 2 elsewhere): pins two charts
+     stacked in column 1 (QQQ, Treasury yields) and two panels stacked in
+     column 2 (snapshot, Fed funds rate), rather than relying on default
+     row-major auto-placement -- which would put each new DOM child beside
+     the previous one instead of underneath it. */
   .wrap > .col1-top { grid-column: 1; grid-row: 1; }
   .wrap > .col1-bottom { grid-column: 1; grid-row: 2; }
   .wrap > .col2 { grid-column: 2; grid-row: 1; }
+  .wrap > .col2-bottom { grid-column: 2; grid-row: 2; }
   @media (max-width: 880px) {
     .wrap { grid-template-columns: 1fr; }
-    .wrap > .col1-top, .wrap > .col1-bottom, .wrap > .col2 { grid-column: auto; grid-row: auto; }
+    .wrap > .col1-top, .wrap > .col1-bottom, .wrap > .col2, .wrap > .col2-bottom
+      { grid-column: auto; grid-row: auto; }
   }
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
   .price { font-size: 44px; font-weight: 700; letter-spacing: -1px; }
@@ -116,7 +118,19 @@
   footer li { margin-bottom: 4px; }
 
   .macro-wrap { padding: 16px 20px; }
-  .tv-chart-container { height: 480px; }
+  .tv-chart-container { height: 480px; position: relative; }
+  /* On-chart legend, top-left -- deliberately NOT the Lightweight Charts
+     built-in last-value label with a `title` prefix: that renders as a wide
+     pill docked at the right axis, right on top of each line's most recent
+     (rightmost) points -- confirmed live, it visibly covered the chart data
+     there. This sits clear of the plotted lines instead. */
+  .chart-legend { position: absolute; top: 8px; left: 8px; z-index: 2; display: flex;
+    flex-direction: column; gap: 3px; font-size: 11px; background: rgba(15,17,21,.7);
+    padding: 5px 9px; border-radius: 6px; pointer-events: none; }
+  .chart-legend .row { display: flex; align-items: center; gap: 6px; }
+  .chart-legend .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .chart-legend .label { color: var(--muted); }
+  .chart-legend .value { color: var(--text); font-weight: 600; }
   .chart-note { color: var(--muted); font-size: 11px; margin-top: 8px; }
   .yield-legend { display: flex; flex-direction: column; gap: 8px; margin: 12px 0 4px; }
   .yield-legend-item { display: flex; gap: 8px; align-items: flex-start; font-size: 12px;
@@ -307,7 +321,10 @@
       <section class="panel col1-bottom">
         <h2>US 10-year Treasury yields</h2>
         <div class="reco-note" id="treasuryLatest" style="margin:0 0 6px">loading ...</div>
-        <div class="tv-chart-container"><div id="treasuryChart" style="width:100%;height:100%"></div></div>
+        <div class="tv-chart-container">
+          <div id="treasuryChart" style="width:100%;height:100%"></div>
+          <div class="chart-legend" id="treasuryLegend"></div>
+        </div>
 
         <div class="yield-legend">
           <div class="yield-legend-item">
@@ -355,6 +372,25 @@
           <tbody><tr><td colspan="2" style="color:var(--muted)">loading ...</td></tr></tbody>
         </table>
         <div class="asof" id="macroAsOf"></div>
+      </section>
+
+      <section class="panel col2-bottom">
+        <h2>US federal funds rate</h2>
+        <div class="reco-note" id="fedFundsLatest" style="margin:0 0 6px">loading ...</div>
+        <div class="tv-chart-container"><div id="fedFundsChart" style="width:100%;height:100%"></div></div>
+        <div class="chart-note">The Fed's own overnight policy rate (FRED <code>DFF</code>, daily
+          effective federal funds rate) -- what banks charge each other for overnight loans, set
+          via the Fed's target range and the primary lever of US monetary policy. This is the rate
+          everyone means by "the Fed raised/cut interest rates"; it anchors the short end of the
+          curve, while the 10-year yields above reflect the market's own expectation for where this
+          rate averages out over the next decade plus a term premium. <b>Impact on stocks</b>:
+          higher fed funds &rarr; tighter financial conditions -- pricier variable-rate debt,
+          reduced consumer/business spending, and a richer "risk-free" alternative competing
+          directly with equities -- generally pressures valuations, hitting leveraged and
+          rate-sensitive names (small caps, unprofitable growth) hardest; cuts ease all of that and
+          are typically a tailwind, especially for the same rate-sensitive names. Fetched directly
+          from FRED, rendered with the same Lightweight Charts setup as the chart above (zoom, pan,
+          crosshair) -- not computed by this app.</div>
       </section>
     </div>
 
@@ -853,22 +889,41 @@ setInterval(refreshScan, 15000);
 // don't compute" requirement. Created lazily on first visit to this tab (it
 // needs a laid-out, visible container to size itself into, and there's no
 // reason to load a third-party script before the user ever looks at this
-// tab). The two Treasury-yield lines below it are NOT TradingView embeds --
-// their free widget doesn't carry FRED:DFII10/DGS10 (confirmed live: it
-// refuses with "this symbol is only available on TradingView") -- they're
-// rendered with TradingView's separate, open-source Lightweight Charts
-// library instead (a plain client-side renderer with no data of its own --
-// no such restriction applies since this app supplies the data), fed the
-// FRED points this app already fetches server-side. That library gives
-// zoom (wheel/pinch), pan (drag), and a crosshair with live axis labels for
-// free, per series -- no hand-rolled interaction code needed (see
-// drawTreasuryChart).
+// tab). The two Treasury-yield lines and the Fed funds rate below it are
+// NOT TradingView embeds -- their free widget doesn't carry FRED:DFII10/
+// DGS10/DFF (confirmed live: it refuses with "this symbol is only
+// available on TradingView") -- they're rendered with TradingView's
+// separate, open-source Lightweight Charts library instead (a plain
+// client-side renderer with no data of its own -- no such restriction
+// applies since this app supplies the data), fed the FRED points this app
+// already fetches server-side. That library gives zoom (wheel/pinch), pan
+// (drag), and a crosshair with live axis labels for free, per series -- no
+// hand-rolled interaction code needed (see drawTreasuryChart/
+// drawFedFundsChart).
 let macroChartInited = false;
 let treasuryChart = null;
 let realYieldSeries = null;
 let nominalYieldSeries = null;
 let treasuryChartFitted = false;
 let pendingTreasuryData = null;   // {real, nominal} data that arrived before the chart lib finished loading
+let fedFundsChart = null;
+let fedFundsSeries = null;
+let fedFundsChartFitted = false;
+let pendingFedFundsData = null;   // [{time, value}, ...] that arrived before the chart lib finished loading
+
+/** Shared Lightweight Charts options for every chart on this tab (dark
+ * theme matched to the app's own palette, zoom/pan/crosshair all on by
+ * default -- see this section's top comment). */
+function createLwcChart(containerId) {
+  return LightweightCharts.createChart(document.getElementById(containerId), {
+    layout: { background: { color: "transparent" }, textColor: "#9aa4b2" },
+    grid: { vertLines: { color: "#262b36" }, horzLines: { color: "#262b36" } },
+    rightPriceScale: { borderColor: "#262b36" },
+    timeScale: { borderColor: "#262b36" },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },   // free-floating crosshair + axis labels, not snap-to-point
+    autoSize: true,
+  });
+}
 
 function initMacroChart() {
   if (macroChartInited) return;
@@ -900,22 +955,25 @@ function initMacroChart() {
   const lw = document.createElement("script");
   lw.src = "https://cdn.jsdelivr.net/npm/lightweight-charts@5.2.1/dist/lightweight-charts.standalone.production.js";
   lw.onload = () => {
-    treasuryChart = LightweightCharts.createChart(document.getElementById("treasuryChart"), {
-      layout: { background: { color: "transparent" }, textColor: "#9aa4b2" },
-      grid: { vertLines: { color: "#262b36" }, horzLines: { color: "#262b36" } },
-      rightPriceScale: { borderColor: "#262b36" },
-      timeScale: { borderColor: "#262b36" },
-      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },   // free-floating crosshair + axis labels, not snap-to-point
-      autoSize: true,
-    });
     const pctFormat = { type: "custom", formatter: v => v.toFixed(2) + "%", minMove: 0.01 };
+
+    treasuryChart = createLwcChart("treasuryChart");
+    // No `title` on either series -- see .chart-legend's CSS comment for
+    // why (it widens the axis last-value pill enough to cover the line's
+    // own recent data).
     nominalYieldSeries = treasuryChart.addSeries(LightweightCharts.LineSeries, {
-      color: "#d29922", lineWidth: 2, title: "Nominal", priceFormat: pctFormat,
+      color: "#d29922", lineWidth: 2, priceFormat: pctFormat,
     });
     realYieldSeries = treasuryChart.addSeries(LightweightCharts.LineSeries, {
-      color: "#58a6ff", lineWidth: 2, title: "Real", priceFormat: pctFormat,
+      color: "#58a6ff", lineWidth: 2, priceFormat: pctFormat,
     });
     if (pendingTreasuryData) { setTreasuryData(pendingTreasuryData); pendingTreasuryData = null; }
+
+    fedFundsChart = createLwcChart("fedFundsChart");
+    fedFundsSeries = fedFundsChart.addSeries(LightweightCharts.LineSeries, {
+      color: "#58a6ff", lineWidth: 2, priceFormat: pctFormat,
+    });
+    if (pendingFedFundsData) { setFedFundsData(pendingFedFundsData); pendingFedFundsData = null; }
   };
   document.body.appendChild(lw);
 }
@@ -931,6 +989,15 @@ function setTreasuryData(data) {
   if (!treasuryChartFitted) {
     treasuryChart.timeScale().fitContent();
     treasuryChartFitted = true;
+  }
+}
+
+/** Same pattern as setTreasuryData, for the single-series Fed funds chart. */
+function setFedFundsData(data) {
+  fedFundsSeries.setData(data);
+  if (!fedFundsChartFitted) {
+    fedFundsChart.timeScale().fitContent();
+    fedFundsChartFitted = true;
   }
 }
 
@@ -1055,6 +1122,18 @@ function updateRecommendations(regime) {
     regime-action matrix below for every regime. Suggestions only, not investment advice.</div>`;
 }
 
+/** Fills a `.chart-legend` div (top-left, clear of the plotted lines --
+ * see that class's CSS comment) with one colored-dot row per entry in
+ * `rows` ([{color, label, value}, ...]); a null/undefined value renders
+ * "-" rather than skipping the row. */
+function renderChartLegend(elId, rows) {
+  document.getElementById(elId).innerHTML = rows.map(r => `
+    <div class="row"><span class="dot" style="background:${r.color}"></span>
+      <span class="label">${r.label}</span>
+      <span class="value">${r.value != null ? r.value.toFixed(2) + "%" : "-"}</span>
+    </div>`).join("");
+}
+
 /** Feeds the US 10Y nominal + real yield chart from `s` (the /api/macro
  * signals object -- reads real_yield_history/nominal_yield_history plus
  * the latest values and breakeven_inflation). Rendered by Lightweight
@@ -1078,6 +1157,11 @@ function drawTreasuryChart(s) {
   bits.push(`as of ${asOfHist[asOfHist.length - 1].date}`);
   latestEl.textContent = bits.join(" · ");
 
+  renderChartLegend("treasuryLegend", [
+    { color: "#d29922", label: "Nominal", value: s.nominal_yield_latest },
+    { color: "#58a6ff", label: "Real", value: s.real_yield_latest },
+  ]);
+
   const data = {
     real: (realHist || []).map(h => ({ time: h.date, value: h.value })),
     nominal: (nominalHist || []).map(h => ({ time: h.date, value: h.value })),
@@ -1086,6 +1170,26 @@ function drawTreasuryChart(s) {
     setTreasuryData(data);
   } else {
     pendingTreasuryData = data;
+  }
+}
+
+/** Feeds the Fed funds rate chart from `s` -- same pattern as
+ * drawTreasuryChart, one series instead of two. */
+function drawFedFundsChart(s) {
+  const latestEl = document.getElementById("fedFundsLatest");
+  const hist = s.fed_funds_history;
+  if (!hist?.length) {
+    latestEl.textContent = "no data yet -- check back shortly";
+    return;
+  }
+  const last = hist[hist.length - 1];
+  latestEl.textContent = `${last.value.toFixed(2)}% as of ${last.date}`;
+
+  const data = hist.map(h => ({ time: h.date, value: h.value }));
+  if (fedFundsSeries) {
+    setFedFundsData(data);
+  } else {
+    pendingFedFundsData = data;
   }
 }
 
@@ -1176,6 +1280,7 @@ async function refreshMacro() {
   updateRecommendations(s.market_regime);
   renderRegimeMatrix(s.market_regime);
   drawTreasuryChart(s);
+  drawFedFundsChart(s);
   document.getElementById("macroAsOf").textContent =
     d.as_of ? "as of " + new Date(d.as_of).toLocaleString() : "not computed yet -- check back shortly";
 }
