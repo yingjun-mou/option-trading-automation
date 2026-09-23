@@ -191,6 +191,8 @@
   .sector-cell-label { font-size: 11px; color: var(--muted); text-transform: uppercase;
     letter-spacing: .04em; margin-bottom: 6px; }
   .sector-cell-label b { color: var(--text); }
+  .sector-cell-value { float: right; color: var(--text); font-weight: 600; text-transform: none;
+    letter-spacing: normal; }
   .sector-chart-container { height: 220px; }
 </style>
 </head>
@@ -412,11 +414,12 @@
     <section class="panel sector-panel">
       <h2>Sector charts</h2>
       <div class="sector-grid" id="sectorGrid"></div>
-      <div class="chart-note">9 live TradingView "Advanced Chart" embeds (the same free, no-key
-        widget as the QQQ chart at the top of this tab -- regular exchange-listed ETFs, not FRED
-        economic series, so none of the embed restriction that ruled out a TradingView chart for
-        the Treasury/Fed-funds charts above applies here) -- rendered entirely by TradingView, not
-        computed by this app.</div>
+      <div class="chart-note">Plain daily close prices, fetched from Yahoo Finance (one batched
+        call for all 9 tickers) and drawn as simple lines with Lightweight Charts -- the same
+        minimal style as the interest-rate charts above, not the fuller TradingView candlestick
+        embed the QQQ chart at the top of this tab uses. Scroll/pinch to zoom, drag to pan, hover
+        for the crosshair's exact date/price on any chart. Not computed: just the fetched closes,
+        connected.</div>
     </section>
 
     <footer>
@@ -945,33 +948,36 @@ function createLwcChart(containerId) {
   });
 }
 
-// 3x3 sector-ETF grid, below the Recommendations panel -- unlike the
-// Treasury/Fed-funds charts above, these are all regular exchange-listed
-// ETFs, not FRED economic series, so the embed restriction that ruled out
-// a TradingView chart *embed* for those (see this section's earlier
-// comment) doesn't apply: plain TradingView.widget() embeds, same as the
-// QQQ chart at the top of this tab. Symbol prefixes confirmed live against
-// tradingview.com/symbols/ (IGV in particular resolves to CBOE:IGV, not
-// the AMEX: prefix its NYSE Arca listing might suggest).
+// 3x3 sector-ETF grid, below the Recommendations panel. Originally 9
+// TradingView candlestick embeds (like the QQQ chart) -- simplified to
+// plain Lightweight Charts line series instead, same minimal style as the
+// interest-rate charts above, per an explicit "too complicated, simplify
+// to line charts" ask. ids here must match the `ticker` values
+// src/macro.py's SECTOR_ETFS returns under `sector_charts`.
 const SECTOR_CHARTS = [
-  { id: "spy",  label: "Overall",             ticker: "SPY",  symbol: "AMEX:SPY" },
-  { id: "qqq",  label: "Tech",                ticker: "QQQ",  symbol: "NASDAQ:QQQ" },
-  { id: "soxx", label: "Semiconductor",       ticker: "SOXX", symbol: "NASDAQ:SOXX" },
-  { id: "igv",  label: "Software",            ticker: "IGV",  symbol: "CBOE:IGV" },
-  { id: "cibr", label: "Cybersecurity",       ticker: "CIBR", symbol: "NASDAQ:CIBR" },
-  { id: "xbi",  label: "Biotech",             ticker: "XBI",  symbol: "AMEX:XBI" },
-  { id: "xle",  label: "Traditional Energy",  ticker: "XLE",  symbol: "AMEX:XLE" },
-  { id: "xlb",  label: "Raw Material",        ticker: "XLB",  symbol: "AMEX:XLB" },
-  { id: "xlf",  label: "Finance",             ticker: "XLF",  symbol: "AMEX:XLF" },
+  { id: "spy",  label: "Overall",             ticker: "SPY" },
+  { id: "qqq",  label: "Tech",                ticker: "QQQ" },
+  { id: "soxx", label: "Semiconductor",       ticker: "SOXX" },
+  { id: "igv",  label: "Software",            ticker: "IGV" },
+  { id: "cibr", label: "Cybersecurity",       ticker: "CIBR" },
+  { id: "xbi",  label: "Biotech",             ticker: "XBI" },
+  { id: "xle",  label: "Traditional Energy",  ticker: "XLE" },
+  { id: "xlb",  label: "Raw Material",        ticker: "XLB" },
+  { id: "xlf",  label: "Finance",             ticker: "XLF" },
 ];
+let sectorCharts = {};    // id -> Lightweight Charts chart instance
+let sectorSeries = {};    // id -> its one line series
+let sectorFitted = {};    // id -> has fitContent() run yet (see setSectorData)
+let pendingSectorData = null;   // {id: [{time, value}, ...]} that arrived before the chart lib finished loading
 
-/** Builds the 9 empty chart-cell containers the sector grid's widgets mount
- * into -- called before tv.js loads so each container exists by the time
- * tv.onload creates its widget. */
+/** Builds the 9 empty chart-cell containers the sector grid's line charts
+ * mount into -- called before the chart lib loads so each container exists
+ * by the time lw.onload creates its chart. */
 function initSectorGrid() {
   document.getElementById("sectorGrid").innerHTML = SECTOR_CHARTS.map(c => `
     <div class="sector-cell">
-      <div class="sector-cell-label">${c.label} &middot; <b>${c.ticker}</b></div>
+      <div class="sector-cell-label">${c.label} &middot; <b>${c.ticker}</b>
+        <span class="sector-cell-value" id="sectorValue-${c.id}"></span></div>
       <div class="sector-chart-container"><div id="sectorChart-${c.id}" style="width:100%;height:100%"></div></div>
     </div>`).join("");
 }
@@ -1001,24 +1007,6 @@ function initMacroChart() {
       ],
       container_id: "tvChart",
     });
-    SECTOR_CHARTS.forEach(c => {
-      new TradingView.widget({
-        autosize: true,
-        symbol: c.symbol,
-        interval: "D",
-        timezone: "Etc/UTC",
-        theme: "dark",
-        style: "1",
-        locale: "en",
-        toolbar_bg: "#171a21",
-        enable_publishing: false,
-        hide_top_toolbar: true,
-        hide_side_toolbar: true,
-        hide_legend: false,
-        allow_symbol_change: false,
-        container_id: "sectorChart-" + c.id,
-      });
-    });
   };
   document.body.appendChild(tv);
 
@@ -1044,6 +1032,15 @@ function initMacroChart() {
       color: "#58a6ff", lineWidth: 2, priceFormat: pctFormat,
     });
     if (pendingFedFundsData) { setFedFundsData(pendingFedFundsData); pendingFedFundsData = null; }
+
+    SECTOR_CHARTS.forEach(c => {
+      sectorCharts[c.id] = createLwcChart("sectorChart-" + c.id);
+      sectorSeries[c.id] = sectorCharts[c.id].addSeries(LightweightCharts.LineSeries, {
+        color: "#58a6ff", lineWidth: 1.5,
+        priceFormat: { type: "custom", formatter: v => "$" + v.toFixed(2), minMove: 0.01 },
+      });
+    });
+    if (pendingSectorData) { setSectorData(pendingSectorData); pendingSectorData = null; }
   };
   document.body.appendChild(lw);
 }
@@ -1069,6 +1066,20 @@ function setFedFundsData(data) {
     fedFundsChart.timeScale().fitContent();
     fedFundsChartFitted = true;
   }
+}
+
+/** Same pattern again, fanned out over the 9 sector charts -- `dataById` is
+ * {id: [{time, value}, ...]}, one entry per SECTOR_CHARTS id. */
+function setSectorData(dataById) {
+  SECTOR_CHARTS.forEach(c => {
+    const data = dataById[c.id];
+    if (!data || !sectorSeries[c.id]) return;
+    sectorSeries[c.id].setData(data);
+    if (!sectorFitted[c.id]) {
+      sectorCharts[c.id].timeScale().fitContent();
+      sectorFitted[c.id] = true;
+    }
+  });
 }
 
 /** Green above `boundary`, red below, amber exactly at it (the "QQQ return",
@@ -1263,6 +1274,29 @@ function drawFedFundsChart(s) {
   }
 }
 
+/** Feeds all 9 sector charts from `s.sector_charts` ([{ticker, label,
+ * history, latest}, ...] as returned by /api/macro) -- same pattern as
+ * drawTreasuryChart/drawFedFundsChart, fanned out by ticker. A ticker
+ * missing from the response (e.g. a transient yfinance miss) just leaves
+ * that one chart on its last-known data rather than clearing it. */
+function drawSectorCharts(s) {
+  const list = s.sector_charts;
+  if (!list?.length) return;
+  const dataById = {};
+  list.forEach(item => {
+    const cfg = SECTOR_CHARTS.find(c => c.ticker === item.ticker);
+    if (!cfg || !item.history?.length) return;
+    dataById[cfg.id] = item.history.map(h => ({ time: h.date, value: h.value }));
+    const valEl = document.getElementById("sectorValue-" + cfg.id);
+    if (valEl) valEl.textContent = "$" + item.latest.toFixed(2);
+  });
+  if (Object.keys(sectorSeries).length) {
+    setSectorData(dataById);
+  } else {
+    pendingSectorData = dataById;
+  }
+}
+
 /** Updates the "Strong Bull/Bull/Sideways/Bear/Strong Bear" badge above the
  * snapshot table from the slow score + market_regime the API returns. */
 function updateRegimeBadge(s) {
@@ -1351,6 +1385,7 @@ async function refreshMacro() {
   renderRegimeMatrix(s.market_regime);
   drawTreasuryChart(s);
   drawFedFundsChart(s);
+  drawSectorCharts(s);
   document.getElementById("macroAsOf").textContent =
     d.as_of ? "as of " + new Date(d.as_of).toLocaleString() : "not computed yet -- check back shortly";
 }

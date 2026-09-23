@@ -461,18 +461,23 @@ unrelated to any single stock's option chain:
   row highlighted. Both render from the one `REGIME_ACTIONS` array so the
   two views can't drift out of sync. Suggestions only -- not investment
   advice, decide and execute manually, same as the rest of this dashboard.
-- **Sector charts**: a 3x3 grid of sector-ETF TradingView embeds below the
+- **Sector charts**: a 3x3 grid of sector-ETF price lines below the
   Recommendations panel -- Overall (`SPY`), Tech (`QQQ`), Semiconductor
   (`SOXX`), Software (`IGV`), Cybersecurity (`CIBR`), Biotech (`XBI`),
   Traditional Energy (`XLE`), Raw Material (`XLB`), Finance (`XLF`).
-  Unlike the Treasury/Fed-funds charts, these are regular exchange-listed
-  ETFs rather than FRED economic series, so the embed restriction that
-  ruled out a TradingView chart *embed* for those doesn't apply here --
-  plain `TradingView.widget()` embeds, same as the QQQ chart at the top of
-  the tab, driven by one `SECTOR_CHARTS` array (`index.html`) rather than 9
-  hand-written blocks. Exchange prefixes confirmed live against
-  `tradingview.com/symbols/` -- `IGV` in particular resolves to `CBOE:IGV`,
-  not the `AMEX:` prefix its NYSE Arca listing might suggest.
+  Originally 9 TradingView candlestick chart *embeds* (like the QQQ chart);
+  simplified to plain Lightweight Charts line series instead, same minimal
+  style as the Treasury/Fed-funds charts, per an explicit "too complicated,
+  simplify to line charts" follow-up -- so this now needs its own fetch,
+  unlike the embed version which needed none: `src/macro.py`'s
+  `_sector_price_histories()` pulls each ticker's plain daily close prices
+  via one batched `yf.download` call (same pattern as `_market_breadth`),
+  not a technical indicator. `SECTOR_CHARTS` (`index.html`) is still the
+  single data source driving both the grid's HTML (`initSectorGrid()`) and
+  the 9 chart/series creations (inside the same `lw.onload` the Treasury
+  and Fed-funds charts already use), and `drawSectorCharts()`/
+  `setSectorData()` mirror those two functions' pattern, fanned out by
+  ticker. Each cell shows its latest price next to the label.
 
 ## Strategy legs
 
@@ -509,7 +514,7 @@ or dataclass to the next.
 | `scanner_job.py` | Background loop that owns the scan cadence, disk cache, and manual-refresh wake-up for the dashboard; merges in `iv_rank_pct` from an injected provider. |
 | `iv_rank.py` | `compute_market_signals(symbols)` -- the realized-vol-percentile proxy for IV Rank, each symbol's trailing closes (for the live Price %ile column), raw `rv_30` (for the IV/RV column), `iv_rv_pct` (that ratio's own 3-month percentile), and `rsi_14`, all batched via one `yf.download` per symbol. `compute_forward_pe(symbols)` -- forward P/E, sequential (no batch endpoint for fundamentals). Carries `SCHEMA_VERSION` for `IvRankJob`'s cache-invalidation check. |
 | `iv_rank_job.py` | Background loop maintaining that proxy on its own slow (~daily) cadence, decoupled from the option scan. |
-| `macro.py` | `compute_macro_signals()` -- QQQ price + Yahoo's own 50/200-day averages, the 6-month return, ADX(14) + its +DI/-DI, the VIX/VIX3M term structure, Nasdaq-100 breadth, the 10-year nominal + real (TIPS) yield histories and the daily federal funds rate straight from FRED (`_fred_yield_history()`, one function for all three series) plus the yields' implied breakeven-inflation gap, the tier-1 slow score, the tier-2 reversal counts, the combined 7-way market regime classification, and (`_regime_history`) that same classification re-run over the last few days for the tab's "flip-flop" check (ADX/breadth/both tiers' own SMA20/SMA50/SMA200 are computed here rather than fetched -- see "Macro tab" above). |
+| `macro.py` | `compute_macro_signals()` -- QQQ price + Yahoo's own 50/200-day averages, the 6-month return, ADX(14) + its +DI/-DI, the VIX/VIX3M term structure, Nasdaq-100 breadth, the 10-year nominal + real (TIPS) yield histories and the daily federal funds rate straight from FRED (`_fred_yield_history()`, one function for all three series) plus the yields' implied breakeven-inflation gap, 9 sector-ETF price histories (`_sector_price_histories()`, one batched `yf.download`), the tier-1 slow score, the tier-2 reversal counts, the combined 7-way market regime classification, and (`_regime_history`) that same classification re-run over the last few days for the tab's "flip-flop" check (ADX/breadth/both tiers' own SMA20/SMA50/SMA200 are computed here rather than fetched -- see "Macro tab" above). |
 | `macro_job.py` | Background loop refreshing that snapshot every 30 minutes, cached to `realtime_data/macro_cache.json`. |
 | `pricing.py` | Black-Scholes price, greeks, implied-vol solve. |
 | `features.py` | Daily features from `MarketData`: rolling 3Y/1Y price percentile (main signal), realised vol, IV percentile, momentum. |

@@ -131,9 +131,27 @@ YIELD_HISTORY_POINTS = 504          # ~2 trading years of daily observations, ma
 # fetch, same reasoning for not using a TradingView embed.
 FED_FUNDS_SERIES_ID = "DFF"         # Daily Effective Federal Funds Rate
 
+# Sector charts: 9 sector-ETF price lines for the Macro tab's 3x3 grid.
+# Plain daily close prices via yfinance (one batched call, same pattern as
+# iv_rank.compute_market_signals/_market_breadth above), not a technical
+# indicator -- the dashboard draws each as a simple Lightweight Charts line,
+# same style as the interest-rate charts above, rather than the fuller
+# TradingView candlestick embed the QQQ chart uses.
+SECTOR_ETFS = [
+    ("SPY", "Overall"),
+    ("QQQ", "Tech"),
+    ("SOXX", "Semiconductor"),
+    ("IGV", "Software"),
+    ("CIBR", "Cybersecurity"),
+    ("XBI", "Biotech"),
+    ("XLE", "Traditional Energy"),
+    ("XLB", "Raw Material"),
+    ("XLF", "Finance"),
+]
+
 # Bump whenever compute_macro_signals()'s return shape changes -- same
 # stale-cache guard as iv_rank.SCHEMA_VERSION, see that constant's note.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def _directional_movement(high: pd.Series, low: pd.Series, close: pd.Series,
@@ -449,6 +467,35 @@ def _extract_close(data: pd.DataFrame, symbol: str, single: bool) -> pd.Series |
         return None
 
 
+def _sector_price_histories(points: int = YIELD_HISTORY_POINTS) -> list[dict]:
+    """[{"ticker", "label", "history": [{"date", "value"}, ...], "latest"}, ...]
+    for SECTOR_ETFS, in that fixed order -- plain daily close prices, one
+    batched `yf.download` call (same pattern as `_market_breadth` above),
+    not a technical indicator. A ticker with no usable history is simply
+    omitted rather than failing the whole call."""
+    import yfinance as yf
+
+    tickers = [t for t, _ in SECTOR_ETFS]
+    try:
+        data = yf.download(tickers=tickers, period=HISTORY_PERIOD, interval="1d",
+                           group_by="ticker", auto_adjust=True, progress=False, threads=False)
+    except Exception:
+        data = None
+    if data is None or data.empty:
+        return []
+
+    single = len(tickers) == 1
+    out = []
+    for ticker, label in SECTOR_ETFS:
+        close = _extract_close(data, ticker, single)
+        if close is None or close.empty:
+            continue
+        recent = close.tail(points)
+        history = [{"date": str(d.date()), "value": float(v)} for d, v in recent.items()]
+        out.append({"ticker": ticker, "label": label, "history": history, "latest": float(close.iloc[-1])})
+    return out
+
+
 def _market_breadth(tickers: list[str], window: int = BREADTH_SMA_WINDOW,
                     chunk_size: int = BREADTH_CHUNK_SIZE,
                     chunk_gap: float = BREADTH_CHUNK_GAP) -> tuple[float | None, int]:
@@ -666,6 +713,13 @@ def compute_macro_signals() -> dict:
             out["fed_funds_history"] = fed_funds_history
         if fed_funds_latest is not None:
             out["fed_funds_latest"] = fed_funds_latest
+    except Exception:
+        pass
+
+    try:
+        sector_charts = _sector_price_histories()
+        if sector_charts:
+            out["sector_charts"] = sector_charts
     except Exception:
         pass
 
