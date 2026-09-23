@@ -184,6 +184,11 @@
   .reco-note { color: var(--muted); font-size: 11px; margin-top: 10px; }
 
   .sector-panel { margin-top: 16px; }
+  .sector-range-buttons { display: flex; gap: 6px; margin-top: 10px; }
+  .range-btn { background: none; border: 1px solid var(--line); color: var(--muted); font: inherit;
+    font-size: 12px; padding: 5px 12px; border-radius: 6px; cursor: pointer; }
+  .range-btn:hover { color: var(--text); }
+  .range-btn.active { border-color: var(--accent); color: var(--accent); }
   .sector-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 10px; }
   @media (max-width: 720px) { .sector-grid { grid-template-columns: 1fr; } }
   @media (min-width: 721px) and (max-width: 1080px) { .sector-grid { grid-template-columns: repeat(2, 1fr); } }
@@ -413,13 +418,22 @@
 
     <section class="panel sector-panel">
       <h2>Sector charts</h2>
+      <div class="sector-range-buttons" id="sectorRangeButtons">
+        <button class="range-btn" data-range="1D">1D</button>
+        <button class="range-btn" data-range="1W">1W</button>
+        <button class="range-btn" data-range="1M">1M</button>
+        <button class="range-btn" data-range="1Y">1Y</button>
+      </div>
       <div class="sector-grid" id="sectorGrid"></div>
       <div class="chart-note">Plain daily close prices, fetched from Yahoo Finance (one batched
         call for all 9 tickers) and drawn as simple lines with Lightweight Charts -- the same
         minimal style as the interest-rate charts above, not the fuller TradingView candlestick
         embed the QQQ chart at the top of this tab uses. Scroll/pinch to zoom, drag to pan, hover
-        for the crosshair's exact date/price on any chart. Not computed: just the fetched closes,
-        connected.</div>
+        for the crosshair's exact date/price on any chart -- or use the 1D/1W/1M/1Y buttons above
+        to align every chart to the same window at once. <b>1D</b> is daily-close data, not
+        intraday (this project fetches one close per trading day, not minute bars), so it shows
+        only the last couple of daily points rather than a true intraday chart. Not computed: just
+        the fetched closes, connected.</div>
     </section>
 
     <footer>
@@ -968,6 +982,7 @@ const SECTOR_CHARTS = [
 let sectorCharts = {};    // id -> Lightweight Charts chart instance
 let sectorSeries = {};    // id -> its one line series
 let sectorFitted = {};    // id -> has fitContent() run yet (see setSectorData)
+let sectorDataLength = {};   // id -> point count currently set (see applySectorRange)
 let pendingSectorData = null;   // {id: [{time, value}, ...]} that arrived before the chart lib finished loading
 
 /** Builds the 9 empty chart-cell containers the sector grid's line charts
@@ -976,7 +991,9 @@ let pendingSectorData = null;   // {id: [{time, value}, ...]} that arrived befor
 function initSectorGrid() {
   document.getElementById("sectorGrid").innerHTML = SECTOR_CHARTS.map(c => `
     <div class="sector-cell">
-      <div class="sector-cell-label">${c.label} &middot; <b>${c.ticker}</b>
+      <div class="sector-cell-label">${c.label} &middot;
+        <a class="sym-link" href="https://finance.yahoo.com/quote/${encodeURIComponent(c.ticker)}/chart/"
+          target="_blank" rel="noopener noreferrer"><b>${c.ticker}</b></a>
         <span class="sector-cell-value" id="sectorValue-${c.id}"></span></div>
       <div class="sector-chart-container"><div id="sectorChart-${c.id}" style="width:100%;height:100%"></div></div>
     </div>`).join("");
@@ -1028,16 +1045,17 @@ function initMacroChart() {
     if (pendingTreasuryData) { setTreasuryData(pendingTreasuryData); pendingTreasuryData = null; }
 
     // AreaSeries, not LineSeries -- a gradient fill down to the bottom of
-    // the pane, colored green/red by each chart's own latest day-over-day
-    // change (see trendColors()) rather than a fixed color. Only for the
-    // single-line charts below (Fed funds, sector grid); the Treasury
-    // chart above keeps plain LineSeries with its fixed amber/blue --
-    // overlaying two semi-transparent gradient fills on the same pane
-    // would muddy the crossover reading that chart exists for, and
-    // green/red would conflict with the amber="nominal"/blue="real"
-    // legend already established for it.
+    // the pane. The Fed funds rate is a policy rate, not a market price --
+    // it sits flat for long stretches between FOMC moves, so a
+    // day-over-day green/red read (meaningful for the sector charts below)
+    // isn't a useful signal here; fixed neutral blue instead, same accent
+    // color used elsewhere on this tab. The Treasury chart above keeps
+    // plain LineSeries with its own fixed amber/blue -- overlaying two
+    // semi-transparent gradient fills on the same pane would muddy the
+    // crossover reading that chart exists for.
     fedFundsChart = createLwcChart("fedFundsChart");
     fedFundsSeries = fedFundsChart.addSeries(LightweightCharts.AreaSeries, {
+      lineColor: "#58a6ff", topColor: "rgba(88,166,255,0.30)", bottomColor: "rgba(88,166,255,0.02)",
       lineWidth: 2, priceFormat: pctFormat,
     });
     if (pendingFedFundsData) { setFedFundsData(pendingFedFundsData); pendingFedFundsData = null; }
@@ -1083,11 +1101,9 @@ function trendColors(data) {
 }
 
 /** Same pattern as setTreasuryData, for the single-series Fed funds chart
- * -- recolors the series (line + gradient fill) to green/red by its own
- * latest day-over-day change before every setData call, not just once. */
+ * -- fixed neutral blue (see this series' creation comment for why it
+ * doesn't get the sector charts' day-over-day green/red treatment). */
 function setFedFundsData(data) {
-  const colors = trendColors(data);
-  fedFundsSeries.applyOptions({ lineColor: colors.line, topColor: colors.top, bottomColor: colors.bottom });
   fedFundsSeries.setData(data);
   if (!fedFundsChartFitted) {
     fedFundsChart.timeScale().fitContent();
@@ -1105,12 +1121,37 @@ function setSectorData(dataById) {
     const colors = trendColors(data);
     sectorSeries[c.id].applyOptions({ lineColor: colors.line, topColor: colors.top, bottomColor: colors.bottom });
     sectorSeries[c.id].setData(data);
+    sectorDataLength[c.id] = data.length;
     if (!sectorFitted[c.id]) {
       sectorCharts[c.id].timeScale().fitContent();
       sectorFitted[c.id] = true;
     }
   });
 }
+
+// 1D/1W/1M/1Y buttons above the sector grid -- sets every chart's visible
+// window to the same trailing N trading days at once (LOGICAL range, i.e.
+// bar count, not calendar dates -- simpler than computing per-ticker
+// calendar cutoffs and unaffected by each ticker's own occasional missing
+// day). 1D is 2 points (yesterday+today), not a true intraday view -- this
+// project only fetches one close per trading day, no minute bars (see the
+// panel's own chart-note).
+const SECTOR_RANGE_DAYS = { "1D": 2, "1W": 5, "1M": 21, "1Y": 252 };
+function applySectorRange(rangeKey) {
+  const days = SECTOR_RANGE_DAYS[rangeKey];
+  if (!days) return;
+  SECTOR_CHARTS.forEach(c => {
+    const chart = sectorCharts[c.id], len = sectorDataLength[c.id];
+    if (!chart || !len) return;
+    chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, len - days), to: len - 1 });
+  });
+  document.querySelectorAll("#sectorRangeButtons .range-btn").forEach(
+    b => b.classList.toggle("active", b.dataset.range === rangeKey));
+}
+document.getElementById("sectorRangeButtons").addEventListener("click", e => {
+  const btn = e.target.closest(".range-btn");
+  if (btn) applySectorRange(btn.dataset.range);
+});
 
 /** Green above `boundary`, red below, amber exactly at it (the "QQQ return",
  * "Price/200DMA", "50DMA/200DMA" rows all use this, with boundary 0 or 1). */

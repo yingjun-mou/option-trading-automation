@@ -337,15 +337,16 @@ unrelated to any single stock's option chain:
   richer risk-free alternative to equities -- pressures valuations broadly,
   hardest on leveraged/rate-sensitive names; cuts are typically a tailwind
   for the same names). Rendered as an `AreaSeries` (gradient fill down to
-  the bottom of the pane), not a plain `LineSeries` -- colored green/red by
-  its own latest day-over-day change (`trendColors()`, `>=` previous value
-  counts as "up", same convention the AAL Wheel tab's own price-change
-  color already uses), re-applied via `series.applyOptions()` on every
-  `setFedFundsData()` call so the color stays current across refreshes, not
-  just at first load. The Treasury chart above keeps plain `LineSeries`
-  with its fixed amber/blue instead -- overlaying two semi-transparent
-  gradient fills on the same pane would muddy the crossover reading that
-  chart exists for, and green/red would conflict with the amber=nominal/
+  the bottom of the pane), not a plain `LineSeries`, but with a **fixed
+  neutral blue** rather than the sector charts' day-over-day green/red
+  (see below) -- the Fed funds rate is a policy rate, not a market price,
+  so it sits flat for long stretches between FOMC moves and a
+  day-over-day up/down read isn't a meaningful signal for it the way it is
+  for a sector ETF's daily close. The Treasury chart above keeps plain
+  `LineSeries` with its own fixed amber/blue instead -- overlaying two
+  semi-transparent gradient fills on the same pane would muddy the
+  crossover reading that chart exists for, and green/red would conflict
+  with the amber=nominal/
   blue=real legend already established for it. The Macro tab's `.wrap` grid grew a 4th panel for
   this, needing one more explicit placement class (`.col2-bottom`,
   alongside the existing `.col1-top`/`.col1-bottom`/`.col2`) so it stacks
@@ -487,11 +488,28 @@ unrelated to any single stock's option chain:
   the 9 chart/series creations (inside the same `lw.onload` the Treasury
   and Fed-funds charts already use), and `drawSectorCharts()`/
   `setSectorData()` mirror those two functions' pattern, fanned out by
-  ticker. Each cell shows its latest price next to the label. Each of the 9
-  is an `AreaSeries` too (gradient fill, green/red by that ticker's own
-  latest day-over-day change), same `trendColors()` helper and
-  `applyOptions()`-on-every-refresh approach as the Fed funds chart --
-  see that bullet above for why the Treasury chart is the one exception.
+  ticker. Each cell shows its latest price next to the label, linking out
+  to that ticker's Yahoo Finance quote page (reusing the Premium Scanner's
+  own `symbolLink()`-style `/quote/{sym}/chart/` pattern and `.sym-link`
+  styling, new tab). Each of the 9 is an `AreaSeries` too (gradient fill,
+  green/red by that ticker's own latest day-over-day change), same
+  `trendColors()` helper and `applyOptions()`-on-every-refresh approach --
+  unlike the Fed funds chart, which explicitly does *not* get this
+  treatment (see that bullet above for why a policy rate doesn't get a
+  daily up/down read).
+  - **1D/1W/1M/1Y range buttons** above the grid (`applySectorRange()`)
+    set every chart's visible window to the same trailing N-trading-day
+    span at once, via Lightweight Charts' `setVisibleLogicalRange`
+    (bar-count based, not calendar dates -- simpler than computing
+    per-ticker calendar cutoffs, and unaffected by any one ticker's
+    occasional missing trading day). `1D` is only 2 points
+    (yesterday/today), not a true intraday view: this project fetches one
+    daily close per ticker, no minute bars, so a genuine "1 day" chart
+    isn't available without a separate intraday data fetch this feature
+    doesn't add. `sectorDataLength` (`index.html`) tracks each chart's
+    current point count so the button handler can compute the right
+    window per ticker (lengths can differ by a day or two between
+    tickers on any given fetch).
 
 ## Strategy legs
 
