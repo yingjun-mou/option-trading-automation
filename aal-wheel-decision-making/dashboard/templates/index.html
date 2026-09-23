@@ -118,6 +118,12 @@
   .macro-wrap { padding: 16px 20px; }
   .tv-chart-container { height: 480px; }
   .chart-note { color: var(--muted); font-size: 11px; margin-top: 8px; }
+  .yield-legend { display: flex; flex-direction: column; gap: 8px; margin: 12px 0 4px; }
+  .yield-legend-item { display: flex; gap: 8px; align-items: flex-start; font-size: 12px;
+    line-height: 1.5; color: var(--muted); }
+  .yield-legend-item b { color: var(--text); }
+  .yield-legend-item code { color: var(--text); }
+  .yield-swatch { flex: none; width: 10px; height: 10px; border-radius: 2px; margin-top: 4px; }
   table.macro td:first-child { color: var(--muted); }
   table.macro td:last-child .pct-pill { font-size: 13px; }
   table.macro tr.macro-section td { color: var(--accent); font-size: 11px; text-transform: uppercase;
@@ -299,19 +305,43 @@
       </section>
 
       <section class="panel col1-bottom">
-        <h2>US 10-year real yield (TIPS)</h2>
+        <h2>US 10-year Treasury yields</h2>
         <div class="reco-note" id="treasuryLatest" style="margin:0 0 6px">loading ...</div>
         <div class="tv-chart-container"><div id="treasuryChart" style="width:100%;height:100%"></div></div>
-        <div class="chart-note">10-year Treasury Inflation-Protected Securities (TIPS)
-          constant-maturity yield -- the standard "real" (inflation-adjusted) long-term rate,
-          distinct from the nominal 10Y Treasury yield. Fetched directly from FRED
-          (<code>DFII10</code>) -- not a TradingView chart <i>embed</i> like the one above (their
-          free embed widget doesn't carry this symbol: confirmed live, it refuses with "this
-          symbol is only available on TradingView"). Rendered instead with TradingView's separate
-          open-source <a href="https://tradingview.github.io/lightweight-charts/" target="_blank"
+
+        <div class="yield-legend">
+          <div class="yield-legend-item">
+            <span class="yield-swatch" style="background:#d29922"></span>
+            <div><b>Nominal 10Y yield</b> (<code>DGS10</code>, amber) -- the plain interest rate on
+              10-year US Treasury debt: real return + the market's expected inflation + a small term
+              premium for locking up money that long. It's the baseline "risk-free rate" most
+              valuation models discount future cash flows against, so when it rises, every future
+              cash flow is worth less today -- capital has a more attractive risk-free alternative to
+              equities, which pressures stock valuations broadly.</div>
+          </div>
+          <div class="yield-legend-item">
+            <span class="yield-swatch" style="background:#58a6ff"></span>
+            <div><b>Real 10Y yield</b> (<code>DFII10</code>, blue) = nominal yield &minus; the
+              market's own implied inflation expectation (priced directly into TIPS, not estimated
+              from CPI forecasts). This is the rate that matters most for equity valuations,
+              especially <b>growth stocks</b>: their value sits mostly in cash flows years or decades
+              out, so a higher real yield raises the discount rate applied to those distant profits
+              far more than it does for a value stock earning most of its cash now -- <b>the higher
+              the real yield, the more growth-stock valuations compress</b> (and the more they
+              re-rate higher when it falls).</div>
+          </div>
+        </div>
+
+        <div class="chart-note">Both series fetched directly from FRED, not TradingView chart
+          <i>embeds</i> like the QQQ chart above -- their free embed widget refuses these two
+          symbols specifically (confirmed live: "this symbol is only available on TradingView").
+          Rendered instead with TradingView's separate, open-source
+          <a href="https://tradingview.github.io/lightweight-charts/" target="_blank"
           rel="noopener noreferrer">Lightweight Charts</a> library, fed the fetched FRED points --
-          scroll/pinch to zoom, drag to pan, hover for the crosshair's exact date/value. Still
-          fetched, not computed: the Fed publishes this series directly, this app only draws it.</div>
+          scroll/pinch to zoom, drag to pan, hover for the crosshair's exact date/value on either
+          line. Still fetched, not computed: the Fed publishes both constant-maturity yields
+          directly, this app only draws them (and the implied-inflation gap between them, which is
+          plain subtraction on the two fetched latest values, not a forecast).</div>
       </section>
 
       <section class="panel col2">
@@ -823,20 +853,22 @@ setInterval(refreshScan, 15000);
 // don't compute" requirement. Created lazily on first visit to this tab (it
 // needs a laid-out, visible container to size itself into, and there's no
 // reason to load a third-party script before the user ever looks at this
-// tab). The real-yield chart below it is NOT a TradingView embed -- their
-// free widget doesn't carry FRED:DFII10 (confirmed live: it refuses with
-// "this symbol is only available on TradingView") -- it's rendered with
-// TradingView's separate, open-source Lightweight Charts library instead
-// (a plain client-side renderer with no data of its own -- no such
-// restriction applies since this app supplies the data), fed the FRED
-// points this app already fetches server-side. That library gives zoom
-// (wheel/pinch), pan (drag), and a crosshair with live axis labels for
-// free -- no hand-rolled interaction code needed (see drawTreasuryChart).
+// tab). The two Treasury-yield lines below it are NOT TradingView embeds --
+// their free widget doesn't carry FRED:DFII10/DGS10 (confirmed live: it
+// refuses with "this symbol is only available on TradingView") -- they're
+// rendered with TradingView's separate, open-source Lightweight Charts
+// library instead (a plain client-side renderer with no data of its own --
+// no such restriction applies since this app supplies the data), fed the
+// FRED points this app already fetches server-side. That library gives
+// zoom (wheel/pinch), pan (drag), and a crosshair with live axis labels for
+// free, per series -- no hand-rolled interaction code needed (see
+// drawTreasuryChart).
 let macroChartInited = false;
 let treasuryChart = null;
-let treasurySeries = null;
+let realYieldSeries = null;
+let nominalYieldSeries = null;
 let treasuryChartFitted = false;
-let pendingTreasuryData = null;   // data that arrived before the chart lib finished loading
+let pendingTreasuryData = null;   // {real, nominal} data that arrived before the chart lib finished loading
 
 function initMacroChart() {
   if (macroChartInited) return;
@@ -876,22 +908,26 @@ function initMacroChart() {
       crosshair: { mode: LightweightCharts.CrosshairMode.Normal },   // free-floating crosshair + axis labels, not snap-to-point
       autoSize: true,
     });
-    treasurySeries = treasuryChart.addSeries(LightweightCharts.LineSeries, {
-      color: "#58a6ff",
-      lineWidth: 2,
-      priceFormat: { type: "custom", formatter: v => v.toFixed(2) + "%", minMove: 0.01 },
+    const pctFormat = { type: "custom", formatter: v => v.toFixed(2) + "%", minMove: 0.01 };
+    nominalYieldSeries = treasuryChart.addSeries(LightweightCharts.LineSeries, {
+      color: "#d29922", lineWidth: 2, title: "Nominal", priceFormat: pctFormat,
+    });
+    realYieldSeries = treasuryChart.addSeries(LightweightCharts.LineSeries, {
+      color: "#58a6ff", lineWidth: 2, title: "Real", priceFormat: pctFormat,
     });
     if (pendingTreasuryData) { setTreasuryData(pendingTreasuryData); pendingTreasuryData = null; }
   };
   document.body.appendChild(lw);
 }
 
-/** Pushes `data` ([{time, value}, ...]) into the treasury chart's series.
- * fitContent() (zoom-to-fit) runs only on the very first load -- later
- * calls (every 60s poll) just update the data in place, so a zoom/pan the
- * viewer has set isn't reset out from under them on every refresh. */
+/** Pushes `{real, nominal}` ([{time, value}, ...] each) into the treasury
+ * chart's two series. fitContent() (zoom-to-fit) runs only on the very
+ * first load -- later calls (every 60s poll) just update the data in
+ * place, so a zoom/pan the viewer has set isn't reset out from under them
+ * on every refresh. */
 function setTreasuryData(data) {
-  treasurySeries.setData(data);
+  if (data.nominal) nominalYieldSeries.setData(data.nominal);
+  if (data.real) realYieldSeries.setData(data.real);
   if (!treasuryChartFitted) {
     treasuryChart.timeScale().fitContent();
     treasuryChartFitted = true;
@@ -1019,23 +1055,34 @@ function updateRecommendations(regime) {
     regime-action matrix below for every regime. Suggestions only, not investment advice.</div>`;
 }
 
-/** Feeds the US 10Y real-yield chart from `history` ([{date, value}, ...],
- * oldest first, as returned by /api/macro). Rendered by Lightweight Charts,
- * not hand-drawn SVG -- see initMacroChart's comment for why there's no
- * TradingView embed for this one, and setTreasuryData for why fitContent()
- * (zoom-to-fit) only runs once rather than on every 60s poll. If the chart
- * library hasn't finished loading yet, stashes the data for initMacroChart's
- * lw.onload to push in once it has. */
-function drawTreasuryChart(history) {
+/** Feeds the US 10Y nominal + real yield chart from `s` (the /api/macro
+ * signals object -- reads real_yield_history/nominal_yield_history plus
+ * the latest values and breakeven_inflation). Rendered by Lightweight
+ * Charts, not hand-drawn SVG -- see initMacroChart's comment for why
+ * there's no TradingView embed for these two, and setTreasuryData for why
+ * fitContent() (zoom-to-fit) only runs once rather than on every 60s poll.
+ * If the chart library hasn't finished loading yet, stashes the data for
+ * initMacroChart's lw.onload to push in once it has. */
+function drawTreasuryChart(s) {
   const latestEl = document.getElementById("treasuryLatest");
-  if (!history || !history.length) {
+  const realHist = s.real_yield_history, nominalHist = s.nominal_yield_history;
+  if (!realHist?.length && !nominalHist?.length) {
     latestEl.textContent = "no data yet -- check back shortly";
     return;
   }
-  const data = history.map(h => ({ time: h.date, value: h.value }));
-  const last = history[history.length - 1];
-  latestEl.textContent = `${last.value.toFixed(2)}% as of ${last.date}`;
-  if (treasurySeries) {
+  const bits = [];
+  if (s.nominal_yield_latest != null) bits.push(`Nominal ${s.nominal_yield_latest.toFixed(2)}%`);
+  if (s.real_yield_latest != null) bits.push(`Real ${s.real_yield_latest.toFixed(2)}%`);
+  if (s.breakeven_inflation != null) bits.push(`implied inflation ${s.breakeven_inflation.toFixed(2)}%`);
+  const asOfHist = nominalHist?.length ? nominalHist : realHist;
+  bits.push(`as of ${asOfHist[asOfHist.length - 1].date}`);
+  latestEl.textContent = bits.join(" · ");
+
+  const data = {
+    real: (realHist || []).map(h => ({ time: h.date, value: h.value })),
+    nominal: (nominalHist || []).map(h => ({ time: h.date, value: h.value })),
+  };
+  if (realYieldSeries) {
     setTreasuryData(data);
   } else {
     pendingTreasuryData = data;
@@ -1128,7 +1175,7 @@ async function refreshMacro() {
   updateRegimeHistory(s.regime_history);
   updateRecommendations(s.market_regime);
   renderRegimeMatrix(s.market_regime);
-  drawTreasuryChart(s.real_yield_history);
+  drawTreasuryChart(s);
   document.getElementById("macroAsOf").textContent =
     d.as_of ? "as of " + new Date(d.as_of).toLocaleString() : "not computed yet -- check back shortly";
 }

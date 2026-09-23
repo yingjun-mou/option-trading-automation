@@ -108,23 +108,25 @@ BREADTH_SMA_WINDOW = 200
 BREADTH_CHUNK_SIZE = 50
 BREADTH_CHUNK_GAP = 1.5
 
-# US 10-year real (TIPS) yield chart. TradingView's free embed doesn't carry
-# this one -- confirmed live: FRED:DFII10 (and the "USA10YRY" alternates
-# some sites use) refuses to render in the Advanced Chart widget with "this
-# symbol is only available on TradingView", a real restriction on their
-# public embed product, not something fixable from this side. So instead
-# this fetches the series straight from FRED's own public CSV endpoint (no
-# API key needed, unlike FRED's REST API) and the dashboard draws it itself
-# with a plain inline SVG (see index.html's drawTreasuryChart()) -- still
-# "fetch, don't compute": the Fed publishes this constant-maturity TIPS
-# yield directly, this project only connects the already-fetched points.
+# US 10-year Treasury yield chart: nominal + real (TIPS), overlaid.
+# TradingView's free embed doesn't carry either series -- confirmed live:
+# FRED:DFII10 (and the "USA10YRY" alternates some sites use) refuses to
+# render in the Advanced Chart widget with "this symbol is only available
+# on TradingView", a real restriction on their public embed product, not
+# something fixable from this side. So instead both series are fetched
+# straight from FRED's own public CSV endpoint (no API key needed, unlike
+# FRED's REST API) and the dashboard draws them itself via Lightweight
+# Charts, fed the fetched points (see index.html's drawTreasuryChart()) --
+# still "fetch, don't compute": the Fed publishes both constant-maturity
+# yields directly, this project only connects the already-fetched points.
 FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
-REAL_YIELD_SERIES_ID = "DFII10"     # 10-Year Treasury Inflation-Indexed Security, Constant Maturity
-REAL_YIELD_HISTORY_POINTS = 504     # ~2 trading years of daily observations, matching HISTORY_PERIOD
+REAL_YIELD_SERIES_ID = "DFII10"     # 10-Year Treasury Inflation-Indexed Security, Constant Maturity ("real" yield)
+NOMINAL_YIELD_SERIES_ID = "DGS10"   # 10-Year Treasury Constant Maturity Rate ("nominal" yield)
+YIELD_HISTORY_POINTS = 504          # ~2 trading years of daily observations, matching HISTORY_PERIOD
 
 # Bump whenever compute_macro_signals()'s return shape changes -- same
 # stale-cache guard as iv_rank.SCHEMA_VERSION, see that constant's note.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def _directional_movement(high: pd.Series, low: pd.Series, close: pd.Series,
@@ -504,12 +506,14 @@ def _fetch_fred_series(series_id: str) -> pd.Series | None:
         return None
 
 
-def _real_yield_history(points: int = REAL_YIELD_HISTORY_POINTS) -> tuple[list[dict], float | None]:
+def _fred_yield_history(series_id: str,
+                        points: int = YIELD_HISTORY_POINTS) -> tuple[list[dict], float | None]:
     """(trailing `points` daily [{"date": ..., "value": ...}, ...], latest
-    value) for the 10-year real (TIPS) yield -- see this module's docstring
-    and FRED_CSV_URL's comment for why this is fetched straight from FRED
-    rather than embedded via TradingView. ([], None) if the fetch fails."""
-    series = _fetch_fred_series(REAL_YIELD_SERIES_ID)
+    value) for a FRED yield series (DFII10 or DGS10 here) -- see this
+    module's docstring and FRED_CSV_URL's comment for why these are fetched
+    straight from FRED rather than embedded via TradingView. ([], None) if
+    the fetch fails."""
+    series = _fetch_fred_series(series_id)
     if series is None or series.empty:
         return [], None
     recent = series.tail(points)
@@ -626,12 +630,27 @@ def compute_macro_signals() -> dict:
         pass
 
     try:
-        real_yield_history, real_yield_latest = _real_yield_history()
+        real_yield_history, real_yield_latest = _fred_yield_history(REAL_YIELD_SERIES_ID)
         if real_yield_history:
             out["real_yield_history"] = real_yield_history
         if real_yield_latest is not None:
             out["real_yield_latest"] = real_yield_latest
     except Exception:
-        pass
+        real_yield_latest = None
+
+    try:
+        nominal_yield_history, nominal_yield_latest = _fred_yield_history(NOMINAL_YIELD_SERIES_ID)
+        if nominal_yield_history:
+            out["nominal_yield_history"] = nominal_yield_history
+        if nominal_yield_latest is not None:
+            out["nominal_yield_latest"] = nominal_yield_latest
+    except Exception:
+        nominal_yield_latest = None
+
+    # Breakeven inflation = nominal - real -- the bond market's own implied
+    # inflation expectation over the next 10 years. Plain arithmetic on the
+    # two already-fetched latest values, not a technical indicator.
+    if real_yield_latest is not None and nominal_yield_latest is not None:
+        out["breakeven_inflation"] = nominal_yield_latest - real_yield_latest
 
     return out
