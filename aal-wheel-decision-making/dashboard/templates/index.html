@@ -1027,16 +1027,25 @@ function initMacroChart() {
     });
     if (pendingTreasuryData) { setTreasuryData(pendingTreasuryData); pendingTreasuryData = null; }
 
+    // AreaSeries, not LineSeries -- a gradient fill down to the bottom of
+    // the pane, colored green/red by each chart's own latest day-over-day
+    // change (see trendColors()) rather than a fixed color. Only for the
+    // single-line charts below (Fed funds, sector grid); the Treasury
+    // chart above keeps plain LineSeries with its fixed amber/blue --
+    // overlaying two semi-transparent gradient fills on the same pane
+    // would muddy the crossover reading that chart exists for, and
+    // green/red would conflict with the amber="nominal"/blue="real"
+    // legend already established for it.
     fedFundsChart = createLwcChart("fedFundsChart");
-    fedFundsSeries = fedFundsChart.addSeries(LightweightCharts.LineSeries, {
-      color: "#58a6ff", lineWidth: 2, priceFormat: pctFormat,
+    fedFundsSeries = fedFundsChart.addSeries(LightweightCharts.AreaSeries, {
+      lineWidth: 2, priceFormat: pctFormat,
     });
     if (pendingFedFundsData) { setFedFundsData(pendingFedFundsData); pendingFedFundsData = null; }
 
     SECTOR_CHARTS.forEach(c => {
       sectorCharts[c.id] = createLwcChart("sectorChart-" + c.id);
-      sectorSeries[c.id] = sectorCharts[c.id].addSeries(LightweightCharts.LineSeries, {
-        color: "#58a6ff", lineWidth: 1.5,
+      sectorSeries[c.id] = sectorCharts[c.id].addSeries(LightweightCharts.AreaSeries, {
+        lineWidth: 1.5,
         priceFormat: { type: "custom", formatter: v => "$" + v.toFixed(2), minMove: 0.01 },
       });
     });
@@ -1059,8 +1068,26 @@ function setTreasuryData(data) {
   }
 }
 
-/** Same pattern as setTreasuryData, for the single-series Fed funds chart. */
+// AreaSeries color pair (line + a top->bottom fading gradient fill) for the
+// Fed funds and sector-grid charts, picked by each series' own latest
+// day-over-day change -- >= previous close counts as "up" (matches the
+// same convention the AAL Wheel tab's own price-change color already
+// uses). Fixed, semi-transparent alphas (not TradingView's own bolder
+// example) for a subtle glow rather than a solid block under the line.
+const TREND_UP = { line: "#3fb950", top: "rgba(63,185,80,0.30)", bottom: "rgba(63,185,80,0.02)" };
+const TREND_DOWN = { line: "#f85149", top: "rgba(248,81,73,0.30)", bottom: "rgba(248,81,73,0.02)" };
+function trendColors(data) {
+  if (!data || data.length < 2) return TREND_UP;
+  const last = data[data.length - 1].value, prev = data[data.length - 2].value;
+  return last >= prev ? TREND_UP : TREND_DOWN;
+}
+
+/** Same pattern as setTreasuryData, for the single-series Fed funds chart
+ * -- recolors the series (line + gradient fill) to green/red by its own
+ * latest day-over-day change before every setData call, not just once. */
 function setFedFundsData(data) {
+  const colors = trendColors(data);
+  fedFundsSeries.applyOptions({ lineColor: colors.line, topColor: colors.top, bottomColor: colors.bottom });
   fedFundsSeries.setData(data);
   if (!fedFundsChartFitted) {
     fedFundsChart.timeScale().fitContent();
@@ -1069,11 +1096,14 @@ function setFedFundsData(data) {
 }
 
 /** Same pattern again, fanned out over the 9 sector charts -- `dataById` is
- * {id: [{time, value}, ...]}, one entry per SECTOR_CHARTS id. */
+ * {id: [{time, value}, ...]}, one entry per SECTOR_CHARTS id. Each chart is
+ * recolored independently by its own latest day-over-day change. */
 function setSectorData(dataById) {
   SECTOR_CHARTS.forEach(c => {
     const data = dataById[c.id];
     if (!data || !sectorSeries[c.id]) return;
+    const colors = trendColors(data);
+    sectorSeries[c.id].applyOptions({ lineColor: colors.line, topColor: colors.top, bottomColor: colors.bottom });
     sectorSeries[c.id].setData(data);
     if (!sectorFitted[c.id]) {
       sectorCharts[c.id].timeScale().fitContent();

@@ -336,7 +336,17 @@ unrelated to any single stock's option chain:
   funds rate -> tighter financial conditions, pricier variable-rate debt, a
   richer risk-free alternative to equities -- pressures valuations broadly,
   hardest on leveraged/rate-sensitive names; cuts are typically a tailwind
-  for the same names). The Macro tab's `.wrap` grid grew a 4th panel for
+  for the same names). Rendered as an `AreaSeries` (gradient fill down to
+  the bottom of the pane), not a plain `LineSeries` -- colored green/red by
+  its own latest day-over-day change (`trendColors()`, `>=` previous value
+  counts as "up", same convention the AAL Wheel tab's own price-change
+  color already uses), re-applied via `series.applyOptions()` on every
+  `setFedFundsData()` call so the color stays current across refreshes, not
+  just at first load. The Treasury chart above keeps plain `LineSeries`
+  with its fixed amber/blue instead -- overlaying two semi-transparent
+  gradient fills on the same pane would muddy the crossover reading that
+  chart exists for, and green/red would conflict with the amber=nominal/
+  blue=real legend already established for it. The Macro tab's `.wrap` grid grew a 4th panel for
   this, needing one more explicit placement class (`.col2-bottom`,
   alongside the existing `.col1-top`/`.col1-bottom`/`.col2`) so it stacks
   under the snapshot panel rather than colliding with the auto-placement
@@ -477,7 +487,11 @@ unrelated to any single stock's option chain:
   the 9 chart/series creations (inside the same `lw.onload` the Treasury
   and Fed-funds charts already use), and `drawSectorCharts()`/
   `setSectorData()` mirror those two functions' pattern, fanned out by
-  ticker. Each cell shows its latest price next to the label.
+  ticker. Each cell shows its latest price next to the label. Each of the 9
+  is an `AreaSeries` too (gradient fill, green/red by that ticker's own
+  latest day-over-day change), same `trendColors()` helper and
+  `applyOptions()`-on-every-refresh approach as the Fed funds chart --
+  see that bullet above for why the Treasury chart is the one exception.
 
 ## Strategy legs
 
