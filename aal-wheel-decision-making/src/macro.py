@@ -132,11 +132,19 @@ YIELD_HISTORY_POINTS = 504          # ~2 trading years of daily observations, ma
 FED_FUNDS_SERIES_ID = "DFF"         # Daily Effective Federal Funds Rate
 
 # Sector charts: 9 sector-ETF price lines for the Macro tab's 3x3 grid.
-# Plain daily close prices via yfinance (one batched call, same pattern as
+# Plain close prices via yfinance (one batched call, same pattern as
 # iv_rank.compute_market_signals/_market_breadth above), not a technical
 # indicator -- the dashboard draws each as a simple Lightweight Charts line,
 # same style as the interest-rate charts above, rather than the fuller
 # TradingView candlestick embed the QQQ chart uses.
+#
+# Hourly, not daily, per an explicit "make it more granular" ask -- so the
+# tab's 1D/1W/1M range buttons actually show intraday-ish detail instead of
+# 1-2 daily points. Yahoo's free intraday feed allows 60m bars up to ~730
+# days back; SECTOR_HISTORY_PERIOD only asks for 1y (~1750 bars/ticker,
+# confirmed live), since that already covers the longest range button (1Y)
+# exactly and roughly halves the fetch/payload size versus asking for the
+# full 2y window this project uses for daily series elsewhere.
 SECTOR_ETFS = [
     ("SPY", "Overall"),
     ("QQQ", "Tech"),
@@ -148,10 +156,12 @@ SECTOR_ETFS = [
     ("XLB", "Raw Material"),
     ("XLF", "Finance"),
 ]
+SECTOR_HISTORY_PERIOD = "1y"
+SECTOR_HISTORY_INTERVAL = "60m"
 
 # Bump whenever compute_macro_signals()'s return shape changes -- same
 # stale-cache guard as iv_rank.SCHEMA_VERSION, see that constant's note.
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 def _directional_movement(high: pd.Series, low: pd.Series, close: pd.Series,
@@ -467,18 +477,23 @@ def _extract_close(data: pd.DataFrame, symbol: str, single: bool) -> pd.Series |
         return None
 
 
-def _sector_price_histories(points: int = YIELD_HISTORY_POINTS) -> list[dict]:
-    """[{"ticker", "label", "history": [{"date", "value"}, ...], "latest"}, ...]
-    for SECTOR_ETFS, in that fixed order -- plain daily close prices, one
-    batched `yf.download` call (same pattern as `_market_breadth` above),
-    not a technical indicator. A ticker with no usable history is simply
+def _sector_price_histories() -> list[dict]:
+    """[{"ticker", "label", "history": [{"time", "value"}, ...], "latest"}, ...]
+    for SECTOR_ETFS, in that fixed order -- hourly close prices (see this
+    module's SECTOR_ETFS comment for why hourly, not daily), one batched
+    `yf.download` call (same pattern as `_market_breadth` above), not a
+    technical indicator. `time` is a Unix timestamp in seconds, not a
+    'YYYY-MM-DD' string like every other history in this module -- Lightweight
+    Charts' BusinessDay string format can only express whole days, and these
+    bars need sub-day precision. A ticker with no usable history is simply
     omitted rather than failing the whole call."""
     import yfinance as yf
 
     tickers = [t for t, _ in SECTOR_ETFS]
     try:
-        data = yf.download(tickers=tickers, period=HISTORY_PERIOD, interval="1d",
-                           group_by="ticker", auto_adjust=True, progress=False, threads=False)
+        data = yf.download(tickers=tickers, period=SECTOR_HISTORY_PERIOD,
+                           interval=SECTOR_HISTORY_INTERVAL, group_by="ticker",
+                           auto_adjust=True, progress=False, threads=False)
     except Exception:
         data = None
     if data is None or data.empty:
@@ -490,8 +505,7 @@ def _sector_price_histories(points: int = YIELD_HISTORY_POINTS) -> list[dict]:
         close = _extract_close(data, ticker, single)
         if close is None or close.empty:
             continue
-        recent = close.tail(points)
-        history = [{"date": str(d.date()), "value": float(v)} for d, v in recent.items()]
+        history = [{"time": int(d.timestamp()), "value": float(v)} for d, v in close.items()]
         out.append({"ticker": ticker, "label": label, "history": history, "latest": float(close.iloc[-1])})
     return out
 

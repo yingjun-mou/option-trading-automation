@@ -425,15 +425,14 @@
         <button class="range-btn" data-range="1Y">1Y</button>
       </div>
       <div class="sector-grid" id="sectorGrid"></div>
-      <div class="chart-note">Plain daily close prices, fetched from Yahoo Finance (one batched
-        call for all 9 tickers) and drawn as simple lines with Lightweight Charts -- the same
-        minimal style as the interest-rate charts above, not the fuller TradingView candlestick
-        embed the QQQ chart at the top of this tab uses. Scroll/pinch to zoom, drag to pan, hover
-        for the crosshair's exact date/price on any chart -- or use the 1D/1W/1M/1Y buttons above
-        to align every chart to the same window at once. <b>1D</b> is daily-close data, not
-        intraday (this project fetches one close per trading day, not minute bars), so it shows
-        only the last couple of daily points rather than a true intraday chart. Not computed: just
-        the fetched closes, connected.</div>
+      <div class="chart-note">Hourly close prices over the trailing year, fetched from Yahoo
+        Finance (one batched call for all 9 tickers) and drawn as simple lines with Lightweight
+        Charts -- the same minimal style as the interest-rate charts above, not the fuller
+        TradingView candlestick embed the QQQ chart at the top of this tab uses. Scroll/pinch to
+        zoom, drag to pan, hover for the crosshair's exact time/price on any chart -- or use the
+        1D/1W/1M/1Y buttons above to align every chart to the same window at once (approximate
+        trading-day-based windows, not exact calendar cutoffs). Not computed: just the fetched
+        hourly closes, connected.</div>
     </section>
 
     <footer>
@@ -950,13 +949,21 @@ let pendingFedFundsData = null;   // [{time, value}, ...] that arrived before th
 
 /** Shared Lightweight Charts options for every chart on this tab (dark
  * theme matched to the app's own palette, zoom/pan/crosshair all on by
- * default -- see this section's top comment). */
-function createLwcChart(containerId) {
+ * default -- see this section's top comment). `hourly` (true only for the
+ * sector grid's UTCTimestamp series) turns on timeVisible for hour:minute
+ * crosshair/axis labels -- confirmed live this must NOT be set for the
+ * Treasury/Fed-funds charts' daily BusinessDay-string data: it crashed the
+ * crosshair ("Cannot read properties of undefined (reading 'year')") on
+ * hover there, since timeVisible's hour:minute formatting assumes
+ * timestamp data, not a plain 'YYYY-MM-DD' business day. */
+function createLwcChart(containerId, hourly = false) {
   return LightweightCharts.createChart(document.getElementById(containerId), {
     layout: { background: { color: "transparent" }, textColor: "#9aa4b2" },
     grid: { vertLines: { color: "#262b36" }, horzLines: { color: "#262b36" } },
     rightPriceScale: { borderColor: "#262b36" },
-    timeScale: { borderColor: "#262b36" },
+    timeScale: hourly
+      ? { borderColor: "#262b36", timeVisible: true, secondsVisible: false }
+      : { borderColor: "#262b36" },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },   // free-floating crosshair + axis labels, not snap-to-point
     autoSize: true,
   });
@@ -1061,7 +1068,7 @@ function initMacroChart() {
     if (pendingFedFundsData) { setFedFundsData(pendingFedFundsData); pendingFedFundsData = null; }
 
     SECTOR_CHARTS.forEach(c => {
-      sectorCharts[c.id] = createLwcChart("sectorChart-" + c.id);
+      sectorCharts[c.id] = createLwcChart("sectorChart-" + c.id, /* hourly */ true);
       sectorSeries[c.id] = sectorCharts[c.id].addSeries(LightweightCharts.AreaSeries, {
         lineWidth: 1.5,
         priceFormat: { type: "custom", formatter: v => "$" + v.toFixed(2), minMove: 0.01 },
@@ -1130,20 +1137,33 @@ function setSectorData(dataById) {
 }
 
 // 1D/1W/1M/1Y buttons above the sector grid -- sets every chart's visible
-// window to the same trailing N trading days at once (LOGICAL range, i.e.
-// bar count, not calendar dates -- simpler than computing per-ticker
-// calendar cutoffs and unaffected by each ticker's own occasional missing
-// day). 1D is 2 points (yesterday+today), not a true intraday view -- this
-// project only fetches one close per trading day, no minute bars (see the
-// panel's own chart-note).
-const SECTOR_RANGE_DAYS = { "1D": 2, "1W": 5, "1M": 21, "1Y": 252 };
+// window to the same trailing span at once (LOGICAL range, i.e. bar count,
+// not calendar dates -- simpler than computing per-ticker calendar cutoffs
+// and unaffected by each ticker's own occasional missing bar). Bar counts
+// are ~7 hourly bars per trading day (a regular NYSE session, confirmed
+// live against the fetched data) -- the sector grid is hourly, not daily,
+// unlike every other history on this tab, so 1D now actually shows a full
+// trading day's worth of intraday detail rather than 1-2 daily points.
+// 1Y has no fixed bar count: the backend already fetches exactly 1 year of
+// hourly bars (see src/macro.py's SECTOR_HISTORY_PERIOD), so "1Y" is just
+// "show everything", i.e. fitContent().
+const SECTOR_BARS_PER_TRADING_DAY = 7;
+const SECTOR_RANGE_BARS = {
+  "1D": SECTOR_BARS_PER_TRADING_DAY * 1,
+  "1W": SECTOR_BARS_PER_TRADING_DAY * 5,
+  "1M": SECTOR_BARS_PER_TRADING_DAY * 21,
+};
 function applySectorRange(rangeKey) {
-  const days = SECTOR_RANGE_DAYS[rangeKey];
-  if (!days) return;
   SECTOR_CHARTS.forEach(c => {
     const chart = sectorCharts[c.id], len = sectorDataLength[c.id];
     if (!chart || !len) return;
-    chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, len - days), to: len - 1 });
+    if (rangeKey === "1Y") {
+      chart.timeScale().fitContent();
+      return;
+    }
+    const bars = SECTOR_RANGE_BARS[rangeKey];
+    if (!bars) return;
+    chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, len - bars), to: len - 1 });
   });
   document.querySelectorAll("#sectorRangeButtons .range-btn").forEach(
     b => b.classList.toggle("active", b.dataset.range === rangeKey));
@@ -1347,9 +1367,13 @@ function drawFedFundsChart(s) {
 
 /** Feeds all 9 sector charts from `s.sector_charts` ([{ticker, label,
  * history, latest}, ...] as returned by /api/macro) -- same pattern as
- * drawTreasuryChart/drawFedFundsChart, fanned out by ticker. A ticker
- * missing from the response (e.g. a transient yfinance miss) just leaves
- * that one chart on its last-known data rather than clearing it. */
+ * drawTreasuryChart/drawFedFundsChart, fanned out by ticker. `history`
+ * here is hourly ({time: <unix seconds>, value}), unlike every other
+ * history on this tab (daily {date: 'YYYY-MM-DD', value}) -- already in
+ * Lightweight Charts' own {time, value} shape, so no field rename needed
+ * here, just passed through. A ticker missing from the response (e.g. a
+ * transient yfinance miss) just leaves that one chart on its last-known
+ * data rather than clearing it. */
 function drawSectorCharts(s) {
   const list = s.sector_charts;
   if (!list?.length) return;
@@ -1357,7 +1381,7 @@ function drawSectorCharts(s) {
   list.forEach(item => {
     const cfg = SECTOR_CHARTS.find(c => c.ticker === item.ticker);
     if (!cfg || !item.history?.length) return;
-    dataById[cfg.id] = item.history.map(h => ({ time: h.date, value: h.value }));
+    dataById[cfg.id] = item.history;
     const valEl = document.getElementById("sectorValue-" + cfg.id);
     if (valEl) valEl.textContent = "$" + item.latest.toFixed(2);
   });

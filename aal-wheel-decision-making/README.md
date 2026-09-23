@@ -481,35 +481,49 @@ unrelated to any single stock's option chain:
   style as the Treasury/Fed-funds charts, per an explicit "too complicated,
   simplify to line charts" follow-up -- so this now needs its own fetch,
   unlike the embed version which needed none: `src/macro.py`'s
-  `_sector_price_histories()` pulls each ticker's plain daily close prices
-  via one batched `yf.download` call (same pattern as `_market_breadth`),
-  not a technical indicator. `SECTOR_CHARTS` (`index.html`) is still the
-  single data source driving both the grid's HTML (`initSectorGrid()`) and
-  the 9 chart/series creations (inside the same `lw.onload` the Treasury
-  and Fed-funds charts already use), and `drawSectorCharts()`/
-  `setSectorData()` mirror those two functions' pattern, fanned out by
-  ticker. Each cell shows its latest price next to the label, linking out
-  to that ticker's Yahoo Finance quote page (reusing the Premium Scanner's
-  own `symbolLink()`-style `/quote/{sym}/chart/` pattern and `.sym-link`
-  styling, new tab). Each of the 9 is an `AreaSeries` too (gradient fill,
-  green/red by that ticker's own latest day-over-day change), same
-  `trendColors()` helper and `applyOptions()`-on-every-refresh approach --
-  unlike the Fed funds chart, which explicitly does *not* get this
-  treatment (see that bullet above for why a policy rate doesn't get a
-  daily up/down read).
+  `_sector_price_histories()` pulls each ticker's close prices via one
+  batched `yf.download` call (same pattern as `_market_breadth`), not a
+  technical indicator. **Hourly, not daily** (`SECTOR_HISTORY_INTERVAL =
+  "60m"`, `SECTOR_HISTORY_PERIOD = "1y"` -- confirmed live this gives
+  ~1750 bars/ticker in ~2-4s for all 9, well within Yahoo's ~730-day limit
+  for 60m bars), per a follow-up "make it more granular" ask -- history
+  points carry a Unix `time` (seconds), not a `'YYYY-MM-DD'` string like
+  every other history in this module, since Lightweight Charts' BusinessDay
+  string format can't express sub-day precision. `SECTOR_CHARTS`
+  (`index.html`) is still the single data source driving both the grid's
+  HTML (`initSectorGrid()`) and the 9 chart/series creations (inside the
+  same `lw.onload` the Treasury and Fed-funds charts already use, but with
+  `createLwcChart(id, /* hourly */ true)` -- see below for why that flag
+  exists), and `drawSectorCharts()`/`setSectorData()` mirror those two
+  functions' pattern, fanned out by ticker. Each cell shows its latest
+  price next to the label, linking out to that ticker's Yahoo Finance quote
+  page (reusing the Premium Scanner's own `symbolLink()`-style
+  `/quote/{sym}/chart/` pattern and `.sym-link` styling, new tab). Each of
+  the 9 is an `AreaSeries` too (gradient fill, green/red by that ticker's
+  own latest day-over-day change), same `trendColors()` helper and
+  `applyOptions()`-on-every-refresh approach -- unlike the Fed funds chart,
+  which explicitly does *not* get this treatment (see that bullet above for
+  why a policy rate doesn't get a daily up/down read).
+  - **`createLwcChart`'s `hourly` flag**: confirmed live that turning on
+    `timeScale.timeVisible` (for hour:minute crosshair/axis labels) is
+    required for the sector grid but actively **breaks** the Treasury/
+    Fed-funds charts -- it crashed their crosshair on hover ("Cannot read
+    properties of undefined (reading 'year')") since `timeVisible`'s
+    hour:minute formatting assumes timestamp data, not their daily
+    `'YYYY-MM-DD'` BusinessDay strings. `createLwcChart(containerId,
+    hourly)` takes an explicit opt-in flag rather than turning this on
+    globally; only the 9 sector chart creations pass `true`.
   - **1D/1W/1M/1Y range buttons** above the grid (`applySectorRange()`)
-    set every chart's visible window to the same trailing N-trading-day
-    span at once, via Lightweight Charts' `setVisibleLogicalRange`
-    (bar-count based, not calendar dates -- simpler than computing
-    per-ticker calendar cutoffs, and unaffected by any one ticker's
-    occasional missing trading day). `1D` is only 2 points
-    (yesterday/today), not a true intraday view: this project fetches one
-    daily close per ticker, no minute bars, so a genuine "1 day" chart
-    isn't available without a separate intraday data fetch this feature
-    doesn't add. `sectorDataLength` (`index.html`) tracks each chart's
-    current point count so the button handler can compute the right
-    window per ticker (lengths can differ by a day or two between
-    tickers on any given fetch).
+    set every chart's visible window to the same trailing span at once, via
+    Lightweight Charts' `setVisibleLogicalRange` (bar-count based, not
+    calendar dates -- simpler than computing per-ticker calendar cutoffs,
+    and unaffected by any one ticker's occasional missing bar). Bar counts
+    are `SECTOR_BARS_PER_TRADING_DAY` (7, confirmed live against a regular
+    NYSE session) times 1/5/21 for 1D/1W/1M; `1Y` has no fixed count --
+    the backend already fetches exactly 1 year of hourly bars, so "1Y" is
+    just `fitContent()`. `sectorDataLength` (`index.html`) tracks each
+    chart's current point count so the window can be computed correctly
+    per ticker even when lengths differ slightly between tickers.
 
 ## Strategy legs
 
@@ -546,7 +560,7 @@ or dataclass to the next.
 | `scanner_job.py` | Background loop that owns the scan cadence, disk cache, and manual-refresh wake-up for the dashboard; merges in `iv_rank_pct` from an injected provider. |
 | `iv_rank.py` | `compute_market_signals(symbols)` -- the realized-vol-percentile proxy for IV Rank, each symbol's trailing closes (for the live Price %ile column), raw `rv_30` (for the IV/RV column), `iv_rv_pct` (that ratio's own 3-month percentile), and `rsi_14`, all batched via one `yf.download` per symbol. `compute_forward_pe(symbols)` -- forward P/E, sequential (no batch endpoint for fundamentals). Carries `SCHEMA_VERSION` for `IvRankJob`'s cache-invalidation check. |
 | `iv_rank_job.py` | Background loop maintaining that proxy on its own slow (~daily) cadence, decoupled from the option scan. |
-| `macro.py` | `compute_macro_signals()` -- QQQ price + Yahoo's own 50/200-day averages, the 6-month return, ADX(14) + its +DI/-DI, the VIX/VIX3M term structure, Nasdaq-100 breadth, the 10-year nominal + real (TIPS) yield histories and the daily federal funds rate straight from FRED (`_fred_yield_history()`, one function for all three series) plus the yields' implied breakeven-inflation gap, 9 sector-ETF price histories (`_sector_price_histories()`, one batched `yf.download`), the tier-1 slow score, the tier-2 reversal counts, the combined 7-way market regime classification, and (`_regime_history`) that same classification re-run over the last few days for the tab's "flip-flop" check (ADX/breadth/both tiers' own SMA20/SMA50/SMA200 are computed here rather than fetched -- see "Macro tab" above). |
+| `macro.py` | `compute_macro_signals()` -- QQQ price + Yahoo's own 50/200-day averages, the 6-month return, ADX(14) + its +DI/-DI, the VIX/VIX3M term structure, Nasdaq-100 breadth, the 10-year nominal + real (TIPS) yield histories and the daily federal funds rate straight from FRED (`_fred_yield_history()`, one function for all three series) plus the yields' implied breakeven-inflation gap, 9 sector-ETF hourly price histories (`_sector_price_histories()`, one batched `yf.download`, `SECTOR_HISTORY_INTERVAL="60m"` -- the one intraday history in this module), the tier-1 slow score, the tier-2 reversal counts, the combined 7-way market regime classification, and (`_regime_history`) that same classification re-run over the last few days for the tab's "flip-flop" check (ADX/breadth/both tiers' own SMA20/SMA50/SMA200 are computed here rather than fetched -- see "Macro tab" above). |
 | `macro_job.py` | Background loop refreshing that snapshot every 30 minutes, cached to `realtime_data/macro_cache.json`. |
 | `pricing.py` | Black-Scholes price, greeks, implied-vol solve. |
 | `features.py` | Daily features from `MarketData`: rolling 3Y/1Y price percentile (main signal), realised vol, IV percentile, momentum. |
