@@ -182,6 +182,16 @@
     margin-bottom: 4px; }
   .reco-item .v { font-size: 14px; font-weight: 600; }
   .reco-note { color: var(--muted); font-size: 11px; margin-top: 10px; }
+
+  .sector-panel { margin-top: 16px; }
+  .sector-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 10px; }
+  @media (max-width: 720px) { .sector-grid { grid-template-columns: 1fr; } }
+  @media (min-width: 721px) and (max-width: 1080px) { .sector-grid { grid-template-columns: repeat(2, 1fr); } }
+  .sector-cell { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+  .sector-cell-label { font-size: 11px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: .04em; margin-bottom: 6px; }
+  .sector-cell-label b { color: var(--text); }
+  .sector-chart-container { height: 220px; }
 </style>
 </head>
 <body>
@@ -397,6 +407,16 @@
     <section class="panel reco-panel">
       <h2>Recommendations</h2>
       <div class="reco-current" id="recoCurrent">loading ...</div>
+    </section>
+
+    <section class="panel sector-panel">
+      <h2>Sector charts</h2>
+      <div class="sector-grid" id="sectorGrid"></div>
+      <div class="chart-note">9 live TradingView "Advanced Chart" embeds (the same free, no-key
+        widget as the QQQ chart at the top of this tab -- regular exchange-listed ETFs, not FRED
+        economic series, so none of the embed restriction that ruled out a TradingView chart for
+        the Treasury/Fed-funds charts above applies here) -- rendered entirely by TradingView, not
+        computed by this app.</div>
     </section>
 
     <footer>
@@ -925,9 +945,41 @@ function createLwcChart(containerId) {
   });
 }
 
+// 3x3 sector-ETF grid, below the Recommendations panel -- unlike the
+// Treasury/Fed-funds charts above, these are all regular exchange-listed
+// ETFs, not FRED economic series, so the embed restriction that ruled out
+// a TradingView chart *embed* for those (see this section's earlier
+// comment) doesn't apply: plain TradingView.widget() embeds, same as the
+// QQQ chart at the top of this tab. Symbol prefixes confirmed live against
+// tradingview.com/symbols/ (IGV in particular resolves to CBOE:IGV, not
+// the AMEX: prefix its NYSE Arca listing might suggest).
+const SECTOR_CHARTS = [
+  { id: "spy",  label: "Overall",             ticker: "SPY",  symbol: "AMEX:SPY" },
+  { id: "qqq",  label: "Tech",                ticker: "QQQ",  symbol: "NASDAQ:QQQ" },
+  { id: "soxx", label: "Semiconductor",       ticker: "SOXX", symbol: "NASDAQ:SOXX" },
+  { id: "igv",  label: "Software",            ticker: "IGV",  symbol: "CBOE:IGV" },
+  { id: "cibr", label: "Cybersecurity",       ticker: "CIBR", symbol: "NASDAQ:CIBR" },
+  { id: "xbi",  label: "Biotech",             ticker: "XBI",  symbol: "AMEX:XBI" },
+  { id: "xle",  label: "Traditional Energy",  ticker: "XLE",  symbol: "AMEX:XLE" },
+  { id: "xlb",  label: "Raw Material",        ticker: "XLB",  symbol: "AMEX:XLB" },
+  { id: "xlf",  label: "Finance",             ticker: "XLF",  symbol: "AMEX:XLF" },
+];
+
+/** Builds the 9 empty chart-cell containers the sector grid's widgets mount
+ * into -- called before tv.js loads so each container exists by the time
+ * tv.onload creates its widget. */
+function initSectorGrid() {
+  document.getElementById("sectorGrid").innerHTML = SECTOR_CHARTS.map(c => `
+    <div class="sector-cell">
+      <div class="sector-cell-label">${c.label} &middot; <b>${c.ticker}</b></div>
+      <div class="sector-chart-container"><div id="sectorChart-${c.id}" style="width:100%;height:100%"></div></div>
+    </div>`).join("");
+}
+
 function initMacroChart() {
   if (macroChartInited) return;
   macroChartInited = true;
+  initSectorGrid();
 
   const tv = document.createElement("script");
   tv.src = "https://s3.tradingview.com/tv.js";
@@ -948,6 +1000,24 @@ function initMacroChart() {
         { id: "MASimple@tv-basicstudies", inputs: { length: 200 } },
       ],
       container_id: "tvChart",
+    });
+    SECTOR_CHARTS.forEach(c => {
+      new TradingView.widget({
+        autosize: true,
+        symbol: c.symbol,
+        interval: "D",
+        timezone: "Etc/UTC",
+        theme: "dark",
+        style: "1",
+        locale: "en",
+        toolbar_bg: "#171a21",
+        enable_publishing: false,
+        hide_top_toolbar: true,
+        hide_side_toolbar: true,
+        hide_legend: false,
+        allow_symbol_change: false,
+        container_id: "sectorChart-" + c.id,
+      });
     });
   };
   document.body.appendChild(tv);

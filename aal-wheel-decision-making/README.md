@@ -461,6 +461,18 @@ unrelated to any single stock's option chain:
   row highlighted. Both render from the one `REGIME_ACTIONS` array so the
   two views can't drift out of sync. Suggestions only -- not investment
   advice, decide and execute manually, same as the rest of this dashboard.
+- **Sector charts**: a 3x3 grid of sector-ETF TradingView embeds below the
+  Recommendations panel -- Overall (`SPY`), Tech (`QQQ`), Semiconductor
+  (`SOXX`), Software (`IGV`), Cybersecurity (`CIBR`), Biotech (`XBI`),
+  Traditional Energy (`XLE`), Raw Material (`XLB`), Finance (`XLF`).
+  Unlike the Treasury/Fed-funds charts, these are regular exchange-listed
+  ETFs rather than FRED economic series, so the embed restriction that
+  ruled out a TradingView chart *embed* for those doesn't apply here --
+  plain `TradingView.widget()` embeds, same as the QQQ chart at the top of
+  the tab, driven by one `SECTOR_CHARTS` array (`index.html`) rather than 9
+  hand-written blocks. Exchange prefixes confirmed live against
+  `tradingview.com/symbols/` -- `IGV` in particular resolves to `CBOE:IGV`,
+  not the `AMEX:` prefix its NYSE Arca listing might suggest.
 
 ## Strategy legs
 
