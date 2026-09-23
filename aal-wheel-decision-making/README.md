@@ -312,12 +312,35 @@ unrelated to any single stock's option chain:
   Two description blocks under the chart spell out what each line means and
   its equity-market impact -- notably that a *higher real yield* raises the
   discount rate on distant cash flows, so it pressures growth-stock
-  valuations more than value stocks, and eases them when it falls. The
-  Macro tab's `.wrap` grid needed explicit `grid-column`/`grid-row`
-  placement (`.col1-top`/`.col1-bottom`/`.col2` classes) once it grew a 3rd
-  panel -- default row-major auto-placement would put this chart *beside*
-  the QQQ chart instead of underneath it, bumping the snapshot panel down
-  instead.
+  valuations more than value stocks, and eases them when it falls. Per-line
+  labels are a small custom `.chart-legend` overlay pinned to the chart's
+  top-left corner (`renderChartLegend()`), **not** Lightweight Charts' own
+  built-in last-value label with a `title` set on each series -- that
+  renders as a wide pill docked at the right axis, right on top of each
+  line's most recent points; confirmed live it visibly covered the chart
+  data there, so the fix removes `title` from both series (axis just shows
+  the plain numeric badge, standard/non-intrusive) and moves the
+  name+value pairing to the corner overlay instead.
+- **US federal funds rate chart** (below the Macro snapshot panel): the
+  Fed's own overnight policy rate, FRED `DFF` (daily effective federal
+  funds rate, chosen over the monthly-average `FEDFUNDS` to match the daily
+  granularity of the yield series above) -- what "the interest rate" means
+  in the sense of "the Fed raised/cut rates," distinct from the
+  market-priced Treasury yields above. Same fetch-not-embed reasoning and
+  Lightweight Charts rendering as the Treasury chart (`drawFedFundsChart()`
+  / `setFedFundsData()`, mirroring `drawTreasuryChart()`/`setTreasuryData()`
+  but for one series). Its description explains the rate's relationship to
+  the 10-year yields above (it anchors the short end of the curve; the 10Y
+  yields reflect the market's own expectation for where it averages out
+  over the next decade, plus a term premium) and its equity impact (higher
+  funds rate -> tighter financial conditions, pricier variable-rate debt, a
+  richer risk-free alternative to equities -- pressures valuations broadly,
+  hardest on leveraged/rate-sensitive names; cuts are typically a tailwind
+  for the same names). The Macro tab's `.wrap` grid grew a 4th panel for
+  this, needing one more explicit placement class (`.col2-bottom`,
+  alongside the existing `.col1-top`/`.col1-bottom`/`.col2`) so it stacks
+  under the snapshot panel rather than colliding with the auto-placement
+  default -- same reasoning as the Treasury chart's own placement fix.
 - **Snapshot table** (`src/macro.py`'s `compute_macro_signals()`, refreshed
   every 30 min by `src/macro_job.py`'s `MacroJob`, `realtime_data/macro_cache.json`):
   - `fifty_dma`/`two_hundred_dma` are Yahoo's own already-computed
@@ -474,7 +497,7 @@ or dataclass to the next.
 | `scanner_job.py` | Background loop that owns the scan cadence, disk cache, and manual-refresh wake-up for the dashboard; merges in `iv_rank_pct` from an injected provider. |
 | `iv_rank.py` | `compute_market_signals(symbols)` -- the realized-vol-percentile proxy for IV Rank, each symbol's trailing closes (for the live Price %ile column), raw `rv_30` (for the IV/RV column), `iv_rv_pct` (that ratio's own 3-month percentile), and `rsi_14`, all batched via one `yf.download` per symbol. `compute_forward_pe(symbols)` -- forward P/E, sequential (no batch endpoint for fundamentals). Carries `SCHEMA_VERSION` for `IvRankJob`'s cache-invalidation check. |
 | `iv_rank_job.py` | Background loop maintaining that proxy on its own slow (~daily) cadence, decoupled from the option scan. |
-| `macro.py` | `compute_macro_signals()` -- QQQ price + Yahoo's own 50/200-day averages, the 6-month return, ADX(14) + its +DI/-DI, the VIX/VIX3M term structure, Nasdaq-100 breadth, the 10-year nominal + real (TIPS) yield histories straight from FRED (`_fred_yield_history()`) plus their implied breakeven-inflation gap, the tier-1 slow score, the tier-2 reversal counts, the combined 7-way market regime classification, and (`_regime_history`) that same classification re-run over the last few days for the tab's "flip-flop" check (ADX/breadth/both tiers' own SMA20/SMA50/SMA200 are computed here rather than fetched -- see "Macro tab" above). |
+| `macro.py` | `compute_macro_signals()` -- QQQ price + Yahoo's own 50/200-day averages, the 6-month return, ADX(14) + its +DI/-DI, the VIX/VIX3M term structure, Nasdaq-100 breadth, the 10-year nominal + real (TIPS) yield histories and the daily federal funds rate straight from FRED (`_fred_yield_history()`, one function for all three series) plus the yields' implied breakeven-inflation gap, the tier-1 slow score, the tier-2 reversal counts, the combined 7-way market regime classification, and (`_regime_history`) that same classification re-run over the last few days for the tab's "flip-flop" check (ADX/breadth/both tiers' own SMA20/SMA50/SMA200 are computed here rather than fetched -- see "Macro tab" above). |
 | `macro_job.py` | Background loop refreshing that snapshot every 30 minutes, cached to `realtime_data/macro_cache.json`. |
 | `pricing.py` | Black-Scholes price, greeks, implied-vol solve. |
 | `features.py` | Daily features from `MarketData`: rolling 3Y/1Y price percentile (main signal), realised vol, IV percentile, momentum. |

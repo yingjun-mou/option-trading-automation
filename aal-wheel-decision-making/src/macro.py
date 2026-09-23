@@ -124,9 +124,16 @@ REAL_YIELD_SERIES_ID = "DFII10"     # 10-Year Treasury Inflation-Indexed Securit
 NOMINAL_YIELD_SERIES_ID = "DGS10"   # 10-Year Treasury Constant Maturity Rate ("nominal" yield)
 YIELD_HISTORY_POINTS = 504          # ~2 trading years of daily observations, matching HISTORY_PERIOD
 
+# US "the interest rate" chart -- the Fed's own overnight policy rate, not
+# a market-priced Treasury yield like the two above. DFF (daily effective
+# federal funds rate) rather than FEDFUNDS (the monthly-average version) to
+# match the daily granularity of the yield series above. Same FRED CSV
+# fetch, same reasoning for not using a TradingView embed.
+FED_FUNDS_SERIES_ID = "DFF"         # Daily Effective Federal Funds Rate
+
 # Bump whenever compute_macro_signals()'s return shape changes -- same
 # stale-cache guard as iv_rank.SCHEMA_VERSION, see that constant's note.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def _directional_movement(high: pd.Series, low: pd.Series, close: pd.Series,
@@ -652,5 +659,14 @@ def compute_macro_signals() -> dict:
     # two already-fetched latest values, not a technical indicator.
     if real_yield_latest is not None and nominal_yield_latest is not None:
         out["breakeven_inflation"] = nominal_yield_latest - real_yield_latest
+
+    try:
+        fed_funds_history, fed_funds_latest = _fred_yield_history(FED_FUNDS_SERIES_ID)
+        if fed_funds_history:
+            out["fed_funds_history"] = fed_funds_history
+        if fed_funds_latest is not None:
+            out["fed_funds_latest"] = fed_funds_latest
+    except Exception:
+        pass
 
     return out
