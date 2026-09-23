@@ -108,9 +108,23 @@ BREADTH_SMA_WINDOW = 200
 BREADTH_CHUNK_SIZE = 50
 BREADTH_CHUNK_GAP = 1.5
 
+# US 10-year real (TIPS) yield chart. TradingView's free embed doesn't carry
+# this one -- confirmed live: FRED:DFII10 (and the "USA10YRY" alternates
+# some sites use) refuses to render in the Advanced Chart widget with "this
+# symbol is only available on TradingView", a real restriction on their
+# public embed product, not something fixable from this side. So instead
+# this fetches the series straight from FRED's own public CSV endpoint (no
+# API key needed, unlike FRED's REST API) and the dashboard draws it itself
+# with a plain inline SVG (see index.html's drawTreasuryChart()) -- still
+# "fetch, don't compute": the Fed publishes this constant-maturity TIPS
+# yield directly, this project only connects the already-fetched points.
+FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
+REAL_YIELD_SERIES_ID = "DFII10"     # 10-Year Treasury Inflation-Indexed Security, Constant Maturity
+REAL_YIELD_HISTORY_POINTS = 504     # ~2 trading years of daily observations, matching HISTORY_PERIOD
+
 # Bump whenever compute_macro_signals()'s return shape changes -- same
 # stale-cache guard as iv_rank.SCHEMA_VERSION, see that constant's note.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def _directional_movement(high: pd.Series, low: pd.Series, close: pd.Series,
@@ -470,6 +484,39 @@ def _market_breadth(tickers: list[str], window: int = BREADTH_SMA_WINDOW,
     return (above / total if total else None), total
 
 
+def _fetch_fred_series(series_id: str) -> pd.Series | None:
+    """A FRED series' full daily history as a date-indexed Series, via
+    FRED's public `fredgraph.csv` endpoint -- unlike FRED's REST API, this
+    needs no API key/signup, just a plain CSV download. Missing
+    observations (FRED marks data gaps as ".") are dropped rather than
+    interpolated."""
+    import requests
+    try:
+        r = requests.get(FRED_CSV_URL.format(series_id=series_id), timeout=20)
+        r.raise_for_status()
+        df = pd.read_csv(io.StringIO(r.text))
+        df.columns = ["date", "value"]
+        df["value"] = pd.to_numeric(df["value"], errors="coerce")
+        df = df.dropna(subset=["value"])
+        df["date"] = pd.to_datetime(df["date"])
+        return df.set_index("date")["value"]
+    except Exception:
+        return None
+
+
+def _real_yield_history(points: int = REAL_YIELD_HISTORY_POINTS) -> tuple[list[dict], float | None]:
+    """(trailing `points` daily [{"date": ..., "value": ...}, ...], latest
+    value) for the 10-year real (TIPS) yield -- see this module's docstring
+    and FRED_CSV_URL's comment for why this is fetched straight from FRED
+    rather than embedded via TradingView. ([], None) if the fetch fails."""
+    series = _fetch_fred_series(REAL_YIELD_SERIES_ID)
+    if series is None or series.empty:
+        return [], None
+    recent = series.tail(points)
+    history = [{"date": str(d.date()), "value": float(v)} for d, v in recent.items()]
+    return history, float(series.iloc[-1])
+
+
 def compute_macro_signals() -> dict:
     """QQQ trend/momentum + VIX term-structure snapshot. Returns {} on total
     failure so MacroJob just keeps serving its last cached snapshot; any
@@ -575,6 +622,15 @@ def compute_macro_signals() -> dict:
         if breadth is not None:
             out["nasdaq100_breadth"] = breadth
             out["nasdaq100_breadth_n"] = breadth_n
+    except Exception:
+        pass
+
+    try:
+        real_yield_history, real_yield_latest = _real_yield_history()
+        if real_yield_history:
+            out["real_yield_history"] = real_yield_history
+        if real_yield_latest is not None:
+            out["real_yield_latest"] = real_yield_latest
     except Exception:
         pass
 

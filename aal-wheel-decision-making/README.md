@@ -281,6 +281,24 @@ unrelated to any single stock's option chain:
   `initMacroChart()`). The chart and both moving-average lines are rendered
   entirely by TradingView -- this project fetches nothing for it and computes
   none of it.
+- **US 10-year real yield chart** (directly below the QQQ one): the 10-year
+  TIPS constant-maturity yield, FRED series `DFII10` -- the standard
+  "real" (inflation-adjusted) long-term rate. **Not** a TradingView embed
+  like the QQQ chart -- confirmed live that TradingView's free Advanced
+  Chart widget refuses this symbol ("this symbol is only available on
+  TradingView"), a restriction on their public embed product, not
+  something fixable from this side. Instead, `src/macro.py`'s
+  `_real_yield_history()` fetches the series straight from FRED's public
+  `fredgraph.csv` endpoint (**no API key needed**, unlike FRED's REST API --
+  just a plain CSV download) and `index.html`'s `drawTreasuryChart()` draws
+  it with a plain inline SVG, the same technique as the AAL Wheel tab's
+  `drawSpark()` sparkline. Still "fetch, don't compute": the Fed publishes
+  this series directly, this project only connects the already-fetched
+  points. The Macro tab's `.wrap` grid needed explicit `grid-column`/
+  `grid-row` placement (`.col1-top`/`.col1-bottom`/`.col2` classes) once it
+  grew a 3rd panel -- default row-major auto-placement would put this
+  chart *beside* the QQQ chart instead of underneath it, bumping the
+  snapshot panel down instead.
 - **Snapshot table** (`src/macro.py`'s `compute_macro_signals()`, refreshed
   every 30 min by `src/macro_job.py`'s `MacroJob`, `realtime_data/macro_cache.json`):
   - `fifty_dma`/`two_hundred_dma` are Yahoo's own already-computed
@@ -437,7 +455,7 @@ or dataclass to the next.
 | `scanner_job.py` | Background loop that owns the scan cadence, disk cache, and manual-refresh wake-up for the dashboard; merges in `iv_rank_pct` from an injected provider. |
 | `iv_rank.py` | `compute_market_signals(symbols)` -- the realized-vol-percentile proxy for IV Rank, each symbol's trailing closes (for the live Price %ile column), raw `rv_30` (for the IV/RV column), `iv_rv_pct` (that ratio's own 3-month percentile), and `rsi_14`, all batched via one `yf.download` per symbol. `compute_forward_pe(symbols)` -- forward P/E, sequential (no batch endpoint for fundamentals). Carries `SCHEMA_VERSION` for `IvRankJob`'s cache-invalidation check. |
 | `iv_rank_job.py` | Background loop maintaining that proxy on its own slow (~daily) cadence, decoupled from the option scan. |
-| `macro.py` | `compute_macro_signals()` -- QQQ price + Yahoo's own 50/200-day averages, the 6-month return, ADX(14) + its +DI/-DI, the VIX/VIX3M term structure, Nasdaq-100 breadth, the tier-1 slow score, the tier-2 reversal counts, the combined 7-way market regime classification, and (`_regime_history`) that same classification re-run over the last few days for the tab's "flip-flop" check (ADX/breadth/both tiers' own SMA20/SMA50/SMA200 are computed here rather than fetched -- see "Macro tab" above). |
+| `macro.py` | `compute_macro_signals()` -- QQQ price + Yahoo's own 50/200-day averages, the 6-month return, ADX(14) + its +DI/-DI, the VIX/VIX3M term structure, Nasdaq-100 breadth, the 10-year real (TIPS) yield history straight from FRED, the tier-1 slow score, the tier-2 reversal counts, the combined 7-way market regime classification, and (`_regime_history`) that same classification re-run over the last few days for the tab's "flip-flop" check (ADX/breadth/both tiers' own SMA20/SMA50/SMA200 are computed here rather than fetched -- see "Macro tab" above). |
 | `macro_job.py` | Background loop refreshing that snapshot every 30 minutes, cached to `realtime_data/macro_cache.json`. |
 | `pricing.py` | Black-Scholes price, greeks, implied-vol solve. |
 | `features.py` | Daily features from `MarketData`: rolling 3Y/1Y price percentile (main signal), realised vol, IV percentile, momentum. |
