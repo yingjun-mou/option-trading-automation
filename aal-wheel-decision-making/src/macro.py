@@ -159,9 +159,20 @@ SECTOR_ETFS = [
 SECTOR_HISTORY_PERIOD = "1y"
 SECTOR_HISTORY_INTERVAL = "60m"
 
+# A second, finer-grained fetch for the "1D" range button specifically --
+# per an explicit follow-up ("one data point every minute... only when the
+# range is <= 1 day"). Yahoo's free intraday feed caps 1-minute bars at 7
+# calendar days back (confirmed live: period any longer than this either
+# errors or silently truncates), which comfortably covers "the last trading
+# day" with room for weekends/holidays in between -- SECTOR_MINUTE_BARS_PER_DAY
+# then trims that down to one regular NYSE session's worth (9:30-16:00 ET =
+# 390 minutes) when the "1D" button is actually clicked.
+SECTOR_MINUTE_HISTORY_PERIOD = "7d"
+SECTOR_MINUTE_HISTORY_INTERVAL = "1m"
+
 # Bump whenever compute_macro_signals()'s return shape changes -- same
 # stale-cache guard as iv_rank.SCHEMA_VERSION, see that constant's note.
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 def _directional_movement(high: pd.Series, low: pd.Series, close: pd.Series,
@@ -477,36 +488,64 @@ def _extract_close(data: pd.DataFrame, symbol: str, single: bool) -> pd.Series |
         return None
 
 
-def _sector_price_histories() -> list[dict]:
-    """[{"ticker", "label", "history": [{"time", "value"}, ...], "latest"}, ...]
-    for SECTOR_ETFS, in that fixed order -- hourly close prices (see this
-    module's SECTOR_ETFS comment for why hourly, not daily), one batched
-    `yf.download` call (same pattern as `_market_breadth` above), not a
-    technical indicator. `time` is a Unix timestamp in seconds, not a
-    'YYYY-MM-DD' string like every other history in this module -- Lightweight
-    Charts' BusinessDay string format can only express whole days, and these
-    bars need sub-day precision. A ticker with no usable history is simply
-    omitted rather than failing the whole call."""
+def _fetch_sector_closes(period: str, interval: str) -> dict[str, pd.Series]:
+    """{ticker: close_series} for SECTOR_ETFS at the given period/interval --
+    one batched `yf.download` call (same pattern as `_market_breadth`
+    above). A ticker with no usable data at this period/interval is simply
+    omitted, not an error."""
     import yfinance as yf
 
     tickers = [t for t, _ in SECTOR_ETFS]
     try:
-        data = yf.download(tickers=tickers, period=SECTOR_HISTORY_PERIOD,
-                           interval=SECTOR_HISTORY_INTERVAL, group_by="ticker",
-                           auto_adjust=True, progress=False, threads=False)
+        data = yf.download(tickers=tickers, period=period, interval=interval,
+                           group_by="ticker", auto_adjust=True, progress=False, threads=False)
     except Exception:
         data = None
     if data is None or data.empty:
-        return []
-
+        return {}
     single = len(tickers) == 1
+    out: dict[str, pd.Series] = {}
+    for ticker, _ in SECTOR_ETFS:
+        close = _extract_close(data, ticker, single)
+        if close is not None and not close.empty:
+            out[ticker] = close
+    return out
+
+
+def _to_history(close: pd.Series) -> list[dict]:
+    """A Close Series -> [{"time": <unix seconds>, "value": ...}, ...] --
+    Lightweight Charts' own {time, value} shape directly, no client-side
+    remapping needed. `time` is a Unix timestamp, not a 'YYYY-MM-DD' string
+    like every other history in this module, since these bars (hourly or
+    minute) need sub-day precision that BusinessDay strings can't express."""
+    return [{"time": int(d.timestamp()), "value": float(v)} for d, v in close.items()]
+
+
+def _sector_price_histories() -> list[dict]:
+    """[{"ticker", "label", "history": [...hourly, 1y...], "history_1m":
+    [...minute, ~7d, only when available...], "latest"}, ...] for
+    SECTOR_ETFS, in that fixed order (see this module's SECTOR_ETFS comment
+    for why hourly by default, and SECTOR_MINUTE_HISTORY_PERIOD's comment
+    for the minute-level "1D" data). Two batched `yf.download` calls (one
+    per granularity), not a technical indicator. A ticker missing from the
+    hourly fetch is omitted entirely; missing only from the minute fetch
+    just means that ticker's `history_1m` key is absent (the "1D" button
+    falls back to hourly data for it client-side rather than showing
+    nothing)."""
+    hourly = _fetch_sector_closes(SECTOR_HISTORY_PERIOD, SECTOR_HISTORY_INTERVAL)
+    minute = _fetch_sector_closes(SECTOR_MINUTE_HISTORY_PERIOD, SECTOR_MINUTE_HISTORY_INTERVAL)
+
     out = []
     for ticker, label in SECTOR_ETFS:
-        close = _extract_close(data, ticker, single)
+        close = hourly.get(ticker)
         if close is None or close.empty:
             continue
-        history = [{"time": int(d.timestamp()), "value": float(v)} for d, v in close.items()]
-        out.append({"ticker": ticker, "label": label, "history": history, "latest": float(close.iloc[-1])})
+        entry = {"ticker": ticker, "label": label, "history": _to_history(close),
+                  "latest": float(close.iloc[-1])}
+        minute_close = minute.get(ticker)
+        if minute_close is not None and not minute_close.empty:
+            entry["history_1m"] = _to_history(minute_close)
+        out.append(entry)
     return out
 
 

@@ -481,29 +481,46 @@ unrelated to any single stock's option chain:
   style as the Treasury/Fed-funds charts, per an explicit "too complicated,
   simplify to line charts" follow-up -- so this now needs its own fetch,
   unlike the embed version which needed none: `src/macro.py`'s
-  `_sector_price_histories()` pulls each ticker's close prices via one
-  batched `yf.download` call (same pattern as `_market_breadth`), not a
-  technical indicator. **Hourly, not daily** (`SECTOR_HISTORY_INTERVAL =
-  "60m"`, `SECTOR_HISTORY_PERIOD = "1y"` -- confirmed live this gives
-  ~1750 bars/ticker in ~2-4s for all 9, well within Yahoo's ~730-day limit
-  for 60m bars), per a follow-up "make it more granular" ask -- history
-  points carry a Unix `time` (seconds), not a `'YYYY-MM-DD'` string like
-  every other history in this module, since Lightweight Charts' BusinessDay
-  string format can't express sub-day precision. `SECTOR_CHARTS`
-  (`index.html`) is still the single data source driving both the grid's
-  HTML (`initSectorGrid()`) and the 9 chart/series creations (inside the
-  same `lw.onload` the Treasury and Fed-funds charts already use, but with
-  `createLwcChart(id, /* hourly */ true)` -- see below for why that flag
-  exists), and `drawSectorCharts()`/`setSectorData()` mirror those two
-  functions' pattern, fanned out by ticker. Each cell shows its latest
-  price next to the label, linking out to that ticker's Yahoo Finance quote
-  page (reusing the Premium Scanner's own `symbolLink()`-style
-  `/quote/{sym}/chart/` pattern and `.sym-link` styling, new tab). Each of
-  the 9 is an `AreaSeries` too (gradient fill, green/red by that ticker's
-  own latest day-over-day change), same `trendColors()` helper and
-  `applyOptions()`-on-every-refresh approach -- unlike the Fed funds chart,
-  which explicitly does *not* get this treatment (see that bullet above for
-  why a policy rate doesn't get a daily up/down read).
+  `_sector_price_histories()` calls `_fetch_sector_closes()` (one batched
+  `yf.download`, same pattern as `_market_breadth`) **twice**, once per
+  granularity:
+  - **Hourly**, `SECTOR_HISTORY_INTERVAL="60m"` / `SECTOR_HISTORY_PERIOD="1y"`
+    -- confirmed live this gives ~1750 bars/ticker in ~2-4s for all 9, well
+    within Yahoo's ~730-day limit for 60m bars. Powers the default view and
+    the 1W/1M/1Y range buttons.
+  - **Minute**, `SECTOR_MINUTE_HISTORY_INTERVAL="1m"` /
+    `SECTOR_MINUTE_HISTORY_PERIOD="7d"` -- confirmed live this gives
+    ~2700-2730 bars/ticker in ~2s for all 9; Yahoo's free feed caps 1-minute
+    history at 7 calendar days back, which is why this granularity can't
+    reach past the 1D button. Added per a follow-up "one data point every
+    minute... only when the range is <= 1 day" ask -- a ticker whose minute
+    fetch comes up empty (rare) just omits that one field, and the frontend
+    falls back to hourly data for it rather than showing nothing. Both
+    granularities' history points carry a Unix `time` (seconds), not a
+    `'YYYY-MM-DD'` string like every other history in this module, since
+    Lightweight Charts' BusinessDay string format can't express sub-day
+    precision.
+
+  `SECTOR_CHARTS` (`index.html`) is still the single data source driving
+  both the grid's HTML (`initSectorGrid()`) and the 9 chart/series
+  creations (inside the same `lw.onload` the Treasury and Fed-funds charts
+  already use, but with `createLwcChart(id, /* hourly */ true)` -- see
+  below for why that flag exists). `drawSectorCharts()` stashes both
+  granularities per ticker (`sectorHourlyData`/`sectorMinuteData`) rather
+  than pushing straight into the series; `refreshSectorSeries()` picks
+  whichever one `currentSectorRange` calls for (minute only for `"1D"`,
+  hourly otherwise) and pushes *that* into each series -- see the range
+  buttons bullet below for how switching is kept from fighting the
+  background 60s refresh. Each cell shows its latest price next to the
+  label, linking out to that ticker's Yahoo Finance quote page (reusing the
+  Premium Scanner's own `symbolLink()`-style `/quote/{sym}/chart/` pattern
+  and `.sym-link` styling, new tab). Each of the 9 is an `AreaSeries` too
+  (gradient fill, green/red by that ticker's own latest day-over-day
+  change -- computed against whichever granularity is currently showing),
+  same `trendColors()` helper and `applyOptions()`-on-every-refresh
+  approach -- unlike the Fed funds chart, which explicitly does *not* get
+  this treatment (see that bullet above for why a policy rate doesn't get a
+  daily up/down read).
   - **`createLwcChart`'s `hourly` flag**: confirmed live that turning on
     `timeScale.timeVisible` (for hour:minute crosshair/axis labels) is
     required for the sector grid but actively **breaks** the Treasury/
@@ -514,16 +531,28 @@ unrelated to any single stock's option chain:
     hourly)` takes an explicit opt-in flag rather than turning this on
     globally; only the 9 sector chart creations pass `true`.
   - **1D/1W/1M/1Y range buttons** above the grid (`applySectorRange()`)
-    set every chart's visible window to the same trailing span at once, via
-    Lightweight Charts' `setVisibleLogicalRange` (bar-count based, not
-    calendar dates -- simpler than computing per-ticker calendar cutoffs,
-    and unaffected by any one ticker's occasional missing bar). Bar counts
-    are `SECTOR_BARS_PER_TRADING_DAY` (7, confirmed live against a regular
-    NYSE session) times 1/5/21 for 1D/1W/1M; `1Y` has no fixed count --
-    the backend already fetches exactly 1 year of hourly bars, so "1Y" is
-    just `fitContent()`. `sectorDataLength` (`index.html`) tracks each
-    chart's current point count so the window can be computed correctly
-    per ticker even when lengths differ slightly between tickers.
+    set every chart's visible window (and, for 1D, its underlying dataset)
+    to the same trailing span at once, via Lightweight Charts'
+    `setVisibleLogicalRange` (bar-count based, not calendar dates --
+    simpler than computing per-ticker calendar cutoffs, and unaffected by
+    any one ticker's occasional missing bar). Bar counts: `SECTOR_MINUTE_BARS_PER_DAY`
+    (390, one regular NYSE session, confirmed live) for `1D`;
+    `SECTOR_BARS_PER_TRADING_DAY` (7 hourly bars/day, also confirmed live)
+    times 5/21 for 1W/1M; `1Y` has no fixed count -- the backend already
+    fetches exactly 1 year of hourly bars, so "1Y" is just `fitContent()`.
+    `refreshSectorSeries(forceViewReset)` is the single choke point both
+    the button click handler and the 60s background refresh (`drawSectorCharts()`)
+    call: a passive refresh only updates the *data* for whichever
+    granularity is currently active (`forceViewReset=false`, preserving
+    the viewer's pan/zoom, same principle as `setTreasuryData`/
+    `setFedFundsData`), while an explicit button click or the very first
+    load always forces a fresh fit/trim (`forceViewReset=true`) -- switching
+    *which* dataset is active (minute vs hourly) needs this regardless,
+    since bar indices from one dataset are meaningless against the other.
+    `sectorDataLength` (`index.html`) tracks each chart's *currently
+    active* dataset's point count so the window is computed correctly per
+    ticker even when lengths differ slightly between tickers or
+    granularities.
 
 ## Strategy legs
 
@@ -560,7 +589,7 @@ or dataclass to the next.
 | `scanner_job.py` | Background loop that owns the scan cadence, disk cache, and manual-refresh wake-up for the dashboard; merges in `iv_rank_pct` from an injected provider. |
 | `iv_rank.py` | `compute_market_signals(symbols)` -- the realized-vol-percentile proxy for IV Rank, each symbol's trailing closes (for the live Price %ile column), raw `rv_30` (for the IV/RV column), `iv_rv_pct` (that ratio's own 3-month percentile), and `rsi_14`, all batched via one `yf.download` per symbol. `compute_forward_pe(symbols)` -- forward P/E, sequential (no batch endpoint for fundamentals). Carries `SCHEMA_VERSION` for `IvRankJob`'s cache-invalidation check. |
 | `iv_rank_job.py` | Background loop maintaining that proxy on its own slow (~daily) cadence, decoupled from the option scan. |
-| `macro.py` | `compute_macro_signals()` -- QQQ price + Yahoo's own 50/200-day averages, the 6-month return, ADX(14) + its +DI/-DI, the VIX/VIX3M term structure, Nasdaq-100 breadth, the 10-year nominal + real (TIPS) yield histories and the daily federal funds rate straight from FRED (`_fred_yield_history()`, one function for all three series) plus the yields' implied breakeven-inflation gap, 9 sector-ETF hourly price histories (`_sector_price_histories()`, one batched `yf.download`, `SECTOR_HISTORY_INTERVAL="60m"` -- the one intraday history in this module), the tier-1 slow score, the tier-2 reversal counts, the combined 7-way market regime classification, and (`_regime_history`) that same classification re-run over the last few days for the tab's "flip-flop" check (ADX/breadth/both tiers' own SMA20/SMA50/SMA200 are computed here rather than fetched -- see "Macro tab" above). |
+| `macro.py` | `compute_macro_signals()` -- QQQ price + Yahoo's own 50/200-day averages, the 6-month return, ADX(14) + its +DI/-DI, the VIX/VIX3M term structure, Nasdaq-100 breadth, the 10-year nominal + real (TIPS) yield histories and the daily federal funds rate straight from FRED (`_fred_yield_history()`, one function for all three series) plus the yields' implied breakeven-inflation gap, 9 sector-ETF price histories at two granularities (`_sector_price_histories()`/`_fetch_sector_closes()`, two batched `yf.download` calls -- hourly over 1y for the default/1W/1M/1Y views, minute over 7d for the 1D view -- the only intraday histories in this module), the tier-1 slow score, the tier-2 reversal counts, the combined 7-way market regime classification, and (`_regime_history`) that same classification re-run over the last few days for the tab's "flip-flop" check (ADX/breadth/both tiers' own SMA20/SMA50/SMA200 are computed here rather than fetched -- see "Macro tab" above). |
 | `macro_job.py` | Background loop refreshing that snapshot every 30 minutes, cached to `realtime_data/macro_cache.json`. |
 | `pricing.py` | Black-Scholes price, greeks, implied-vol solve. |
 | `features.py` | Daily features from `MarketData`: rolling 3Y/1Y price percentile (main signal), realised vol, IV percentile, momentum. |

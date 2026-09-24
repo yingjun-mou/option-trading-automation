@@ -425,14 +425,15 @@
         <button class="range-btn" data-range="1Y">1Y</button>
       </div>
       <div class="sector-grid" id="sectorGrid"></div>
-      <div class="chart-note">Hourly close prices over the trailing year, fetched from Yahoo
-        Finance (one batched call for all 9 tickers) and drawn as simple lines with Lightweight
-        Charts -- the same minimal style as the interest-rate charts above, not the fuller
-        TradingView candlestick embed the QQQ chart at the top of this tab uses. Scroll/pinch to
-        zoom, drag to pan, hover for the crosshair's exact time/price on any chart -- or use the
-        1D/1W/1M/1Y buttons above to align every chart to the same window at once (approximate
-        trading-day-based windows, not exact calendar cutoffs). Not computed: just the fetched
-        hourly closes, connected.</div>
+      <div class="chart-note">Hourly close prices over the trailing year for 1W/1M/1Y, and
+        <b>minute</b> closes over the trailing ~week for <b>1D</b> (Yahoo's free feed caps 1-minute
+        history at 7 days back, so that granularity can't reach further than 1D anyway) -- fetched
+        from Yahoo Finance (two batched calls, one per granularity, for all 9 tickers) and drawn as
+        simple lines with Lightweight Charts, same minimal style as the interest-rate charts above,
+        not the fuller TradingView candlestick embed the QQQ chart at the top of this tab uses.
+        Scroll/pinch to zoom, drag to pan, hover for the crosshair's exact time/price on any chart
+        -- or use the 1D/1W/1M/1Y buttons above to align every chart to the same window (and, for
+        1D, granularity) at once. Not computed: just the fetched closes, connected.</div>
     </section>
 
     <footer>
@@ -988,9 +989,12 @@ const SECTOR_CHARTS = [
 ];
 let sectorCharts = {};    // id -> Lightweight Charts chart instance
 let sectorSeries = {};    // id -> its one line series
-let sectorFitted = {};    // id -> has fitContent() run yet (see setSectorData)
-let sectorDataLength = {};   // id -> point count currently set (see applySectorRange)
-let pendingSectorData = null;   // {id: [{time, value}, ...]} that arrived before the chart lib finished loading
+let sectorHourlyData = {};   // id -> [{time, value}, ...] over the trailing year, hourly bars
+let sectorMinuteData = {};   // id -> [{time, value}, ...] over the trailing ~7d, minute bars (may be absent)
+let sectorDataLength = {};   // id -> point count of whichever dataset is CURRENTLY shown
+let currentSectorRange = null;    // "1D"/"1W"/"1M"/"1Y", or null for the default (hourly, full fit)
+let sectorInitialFitDone = false; // true once the very first data load has set an initial view
+let pendingSectorDraw = false;    // true if data arrived before the chart lib finished loading
 
 /** Builds the 9 empty chart-cell containers the sector grid's line charts
  * mount into -- called before the chart lib loads so each container exists
@@ -1074,7 +1078,11 @@ function initMacroChart() {
         priceFormat: { type: "custom", formatter: v => "$" + v.toFixed(2), minMove: 0.01 },
       });
     });
-    if (pendingSectorData) { setSectorData(pendingSectorData); pendingSectorData = null; }
+    if (pendingSectorDraw) {
+      refreshSectorSeries(/* forceViewReset */ true);
+      sectorInitialFitDone = true;
+      pendingSectorDraw = false;
+    }
   };
   document.body.appendChild(lw);
 }
@@ -1118,53 +1126,70 @@ function setFedFundsData(data) {
   }
 }
 
-/** Same pattern again, fanned out over the 9 sector charts -- `dataById` is
- * {id: [{time, value}, ...]}, one entry per SECTOR_CHARTS id. Each chart is
- * recolored independently by its own latest day-over-day change. */
-function setSectorData(dataById) {
+// 1D/1W/1M/1Y buttons above the sector grid. 1D switches every chart to
+// MINUTE-granularity data (per an explicit "1 data point every minute,
+// only when the range is <= 1 day" ask); 1W/1M/1Y stay on the HOURLY
+// dataset (see src/macro.py's SECTOR_MINUTE_HISTORY_PERIOD for why minute
+// data only covers a short trailing window -- Yahoo's free feed caps
+// 1-minute bars at 7 days back, nowhere near enough for a 1W/1M/1Y view).
+// Visible windows are LOGICAL ranges (bar count, not calendar dates --
+// simpler than per-ticker calendar cutoffs, unaffected by any one
+// ticker's occasional missing bar). Bar counts: ~7 hourly bars/trading
+// day for 1W/1M; a regular NYSE session is 390 one-minute bars for 1D.
+// 1Y has no fixed count -- the backend already fetches exactly 1 year of
+// hourly bars, so "1Y" is just "show everything", i.e. fitContent().
+const SECTOR_BARS_PER_TRADING_DAY = 7;         // hourly bars/day, for 1W/1M
+const SECTOR_MINUTE_BARS_PER_DAY = 390;        // 9:30-16:00 ET regular session, for 1D
+const SECTOR_RANGE_BARS = {
+  "1W": SECTOR_BARS_PER_TRADING_DAY * 5,
+  "1M": SECTOR_BARS_PER_TRADING_DAY * 21,
+};
+
+/** The dataset that should be showing for `id` under `rangeKey` -- minute
+ * data for "1D" (falling back to hourly if this ticker's minute fetch
+ * came up empty, rather than showing nothing), hourly for everything
+ * else. */
+function sectorDataFor(id, rangeKey) {
+  if (rangeKey === "1D") return sectorMinuteData[id] || sectorHourlyData[id];
+  return sectorHourlyData[id];
+}
+
+/** Pushes whichever dataset `currentSectorRange` calls for into every
+ * sector chart's series (recoloring each by its own latest day-over-day
+ * change) -- called both on every data refresh and right after a button
+ * click. `forceViewReset` explicitly re-fits/re-trims the visible window;
+ * without it, this only updates the data in place, preserving whatever
+ * pan/zoom the viewer currently has (same principle as setTreasuryData/
+ * setFedFundsData) -- important because a passive 60s background refresh
+ * must NOT yank the view out from under someone who's clicked 1D or
+ * manually zoomed, but switching *which dataset* is active (minute vs
+ * hourly) always needs an explicit reset, since logical bar indices from
+ * one dataset are meaningless against the other. */
+function refreshSectorSeries(forceViewReset) {
   SECTOR_CHARTS.forEach(c => {
-    const data = dataById[c.id];
-    if (!data || !sectorSeries[c.id]) return;
+    const chart = sectorCharts[c.id], series = sectorSeries[c.id];
+    const data = sectorDataFor(c.id, currentSectorRange);
+    if (!chart || !series || !data?.length) return;
     const colors = trendColors(data);
-    sectorSeries[c.id].applyOptions({ lineColor: colors.line, topColor: colors.top, bottomColor: colors.bottom });
-    sectorSeries[c.id].setData(data);
+    series.applyOptions({ lineColor: colors.line, topColor: colors.top, bottomColor: colors.bottom });
+    series.setData(data);
     sectorDataLength[c.id] = data.length;
-    if (!sectorFitted[c.id]) {
-      sectorCharts[c.id].timeScale().fitContent();
-      sectorFitted[c.id] = true;
+    if (!forceViewReset) return;
+    if (currentSectorRange === "1D") {
+      chart.timeScale().setVisibleLogicalRange(
+        { from: Math.max(0, data.length - SECTOR_MINUTE_BARS_PER_DAY), to: data.length - 1 });
+    } else if (currentSectorRange === "1W" || currentSectorRange === "1M") {
+      const bars = SECTOR_RANGE_BARS[currentSectorRange];
+      chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, data.length - bars), to: data.length - 1 });
+    } else {
+      chart.timeScale().fitContent();   // "1Y", or the default (null) view
     }
   });
 }
 
-// 1D/1W/1M/1Y buttons above the sector grid -- sets every chart's visible
-// window to the same trailing span at once (LOGICAL range, i.e. bar count,
-// not calendar dates -- simpler than computing per-ticker calendar cutoffs
-// and unaffected by each ticker's own occasional missing bar). Bar counts
-// are ~7 hourly bars per trading day (a regular NYSE session, confirmed
-// live against the fetched data) -- the sector grid is hourly, not daily,
-// unlike every other history on this tab, so 1D now actually shows a full
-// trading day's worth of intraday detail rather than 1-2 daily points.
-// 1Y has no fixed bar count: the backend already fetches exactly 1 year of
-// hourly bars (see src/macro.py's SECTOR_HISTORY_PERIOD), so "1Y" is just
-// "show everything", i.e. fitContent().
-const SECTOR_BARS_PER_TRADING_DAY = 7;
-const SECTOR_RANGE_BARS = {
-  "1D": SECTOR_BARS_PER_TRADING_DAY * 1,
-  "1W": SECTOR_BARS_PER_TRADING_DAY * 5,
-  "1M": SECTOR_BARS_PER_TRADING_DAY * 21,
-};
 function applySectorRange(rangeKey) {
-  SECTOR_CHARTS.forEach(c => {
-    const chart = sectorCharts[c.id], len = sectorDataLength[c.id];
-    if (!chart || !len) return;
-    if (rangeKey === "1Y") {
-      chart.timeScale().fitContent();
-      return;
-    }
-    const bars = SECTOR_RANGE_BARS[rangeKey];
-    if (!bars) return;
-    chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, len - bars), to: len - 1 });
-  });
+  currentSectorRange = rangeKey;
+  refreshSectorSeries(/* forceViewReset */ true);
   document.querySelectorAll("#sectorRangeButtons .range-btn").forEach(
     b => b.classList.toggle("active", b.dataset.range === rangeKey));
 }
@@ -1366,29 +1391,31 @@ function drawFedFundsChart(s) {
 }
 
 /** Feeds all 9 sector charts from `s.sector_charts` ([{ticker, label,
- * history, latest}, ...] as returned by /api/macro) -- same pattern as
- * drawTreasuryChart/drawFedFundsChart, fanned out by ticker. `history`
- * here is hourly ({time: <unix seconds>, value}), unlike every other
- * history on this tab (daily {date: 'YYYY-MM-DD', value}) -- already in
- * Lightweight Charts' own {time, value} shape, so no field rename needed
- * here, just passed through. A ticker missing from the response (e.g. a
- * transient yfinance miss) just leaves that one chart on its last-known
- * data rather than clearing it. */
+ * history, history_1m, latest}, ...] as returned by /api/macro) -- same
+ * pattern as drawTreasuryChart/drawFedFundsChart, fanned out by ticker.
+ * `history` (hourly, ~1y) and `history_1m` (minute, ~7d, absent for a
+ * ticker if that fetch came up empty) are both already in Lightweight
+ * Charts' own {time: <unix seconds>, value} shape, so no field rename
+ * needed here, just stashed for refreshSectorSeries() to pick from
+ * depending on the currently-selected range. A ticker missing entirely
+ * from the response (e.g. a transient yfinance miss) just leaves that one
+ * chart on its last-known data rather than clearing it. */
 function drawSectorCharts(s) {
   const list = s.sector_charts;
   if (!list?.length) return;
-  const dataById = {};
   list.forEach(item => {
     const cfg = SECTOR_CHARTS.find(c => c.ticker === item.ticker);
     if (!cfg || !item.history?.length) return;
-    dataById[cfg.id] = item.history;
+    sectorHourlyData[cfg.id] = item.history;
+    if (item.history_1m?.length) sectorMinuteData[cfg.id] = item.history_1m;
     const valEl = document.getElementById("sectorValue-" + cfg.id);
     if (valEl) valEl.textContent = "$" + item.latest.toFixed(2);
   });
   if (Object.keys(sectorSeries).length) {
-    setSectorData(dataById);
+    refreshSectorSeries(/* forceViewReset */ !sectorInitialFitDone);
+    sectorInitialFitDone = true;
   } else {
-    pendingSectorData = dataById;
+    pendingSectorDraw = true;
   }
 }
 
