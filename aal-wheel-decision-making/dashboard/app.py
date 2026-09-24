@@ -87,7 +87,16 @@ def _load_config() -> WheelConfig:
 YFINANCE_PROXY_URL = os.environ.get("YFINANCE_PROXY_URL")
 if YFINANCE_PROXY_URL:
     import yfinance as yf
+    from urllib.parse import urlsplit
     yf.config.network.proxy = YFINANCE_PROXY_URL
+    # Confirms (in Render's logs) that the env var was actually read and
+    # parses as a URL -- without this, "still getting 401s" is ambiguous
+    # between "proxy never got configured" and "proxy configured but that
+    # IP is also blocked/misconfigured", which need very different fixes.
+    parsed = urlsplit(YFINANCE_PROXY_URL)
+    print(f"dashboard: yfinance proxy configured -- scheme={parsed.scheme!r} "
+          f"host={parsed.hostname!r} port={parsed.port!r} "
+          f"user_set={bool(parsed.username)} password_set={bool(parsed.password)}")
 
 IV_RANK = IvRankJob()
 IV_RANK.start()
