@@ -75,6 +75,20 @@ def _load_config() -> WheelConfig:
     return WheelConfig(label="DEFAULT")
 
 
+# Yahoo Finance blocks/challenges requests from cloud-provider IP ranges
+# (Render's free tier included) with a 401 "Invalid Crumb" error even though
+# the exact same yfinance calls work fine from a residential IP -- this is
+# unrelated to the DASHBOARD_USER/PASSWORD login above, it's Yahoo rejecting
+# the *outbound* request before it ever reaches this app. Routing through a
+# proxy is the fix; this is the one place that sets it, since yf.config is
+# global and every module (scanner/iv_rank/macro) imports yfinance lazily
+# per-function rather than sharing one session. Unset locally, so local runs
+# are unaffected.
+YFINANCE_PROXY_URL = os.environ.get("YFINANCE_PROXY_URL")
+if YFINANCE_PROXY_URL:
+    import yfinance as yf
+    yf.config.network.proxy = YFINANCE_PROXY_URL
+
 IV_RANK = IvRankJob()
 IV_RANK.start()
 SCANNER = ScannerJob(iv_rank_provider=lambda: IV_RANK.signals)

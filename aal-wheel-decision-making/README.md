@@ -74,12 +74,21 @@ every time you open the dashboard after a gap, it's a cold start:
   loop across ~13 years) is too large to commit to git, so a fresh deploy
   regenerates it from scratch. `historical_data/stock_aal.csv` (379KB) *is*
   committed, so at least that half is instant and network-free.
-- **Macro**: `MacroJob` starts fetching QQQ/VIX ~10s after the app comes up
-  (see `src/macro_job.py`'s `STARTUP_DELAY`) -- a few lightweight yfinance
-  calls, nowhere near the AAL Wheel tab's regeneration cost, so this tab is
-  usually populated within a few seconds of a cold start. The chart itself
-  needs no backend data at all (it's a client-side TradingView embed), so it
-  renders immediately regardless.
+- **Macro**: `MacroJob` starts fetching QQQ/VIX/breadth/sector data ~10s
+  after the app comes up (see `src/macro_job.py`'s `STARTUP_DELAY`). This has
+  grown well past "a few lightweight calls" as the tab gained Nasdaq-100
+  breadth (~100 tickers), 3 FRED series, and 9 sector charts at two
+  granularities, so on Render's free-tier CPU a cold start's first cycle can
+  take a couple minutes, not seconds. The QQQ *chart* itself needs no backend
+  data at all (it's a client-side TradingView embed), so it renders
+  immediately regardless -- but everything else on the tab (regime,
+  breadth, yields, fed funds, sector charts) waits on that first cycle.
+  Separately: **Yahoo Finance blocks/challenges requests from Render's
+  shared IP range** with a 401 "Invalid Crumb" error, even though the exact
+  same `yfinance` calls succeed from a residential IP -- this breaks every
+  yfinance-dependent signal (QQQ/VIX/breadth/sector charts; the FRED-sourced
+  Treasury-yield and fed-funds charts are unaffected, they don't use
+  yfinance). See `YFINANCE_PROXY_URL` in step 4 below.
 
 This was a deliberate choice over paid always-on hosting; see this
 project's chat history if you want to revisit that tradeoff later, or want
@@ -102,6 +111,15 @@ backtest's).
    -- required, since this becomes reachable by anyone with the URL once
    deployed. Local `python dashboard/app.py` runs stay completely open
    (these env vars are unset there), unchanged from before.
+   - Optionally also set **`YFINANCE_PROXY_URL`** to a residential/rotating
+     proxy's URL (`http://user:pass@host:port`) to fix the Yahoo IP-block
+     issue described above. `dashboard/app.py` reads this once at startup
+     and points `yfinance`'s global config at it (`yf.config.network.proxy`)
+     before either background job starts, so every yfinance call across the
+     app (Macro, Premium Scanner, AAL Wheel) is covered by one setting.
+     Unset (the default) leaves local runs and any non-Render deploy exactly
+     as before. Any provider that gives you an authenticated HTTP proxy
+     endpoint works; this project doesn't depend on a specific one.
 5. Once deployed, Render gives you a `https://<service-name>.onrender.com`
    URL -- open it from any computer, log in with the username/password from
    step 4.
@@ -113,7 +131,7 @@ No Blueprint access, or want to configure it by hand instead: create a new
 --threads 4 --timeout 90 --bind 0.0.0.0:$PORT dashboard.app:app` -- the
 `--workers 1` is deliberate: `ScannerJob`/`IvRankJob` are in-process
 background threads with in-memory state; a second worker process would run
-independent, uncoordinated copies of both), same two env vars as step 4.
+independent, uncoordinated copies of both), same env vars as step 4.
 
 ## Data
 
