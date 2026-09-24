@@ -131,9 +131,48 @@ YIELD_HISTORY_POINTS = 504          # ~2 trading years of daily observations, ma
 # fetch, same reasoning for not using a TradingView embed.
 FED_FUNDS_SERIES_ID = "DFF"         # Daily Effective Federal Funds Rate
 
+# Sector charts: 9 sector-ETF price lines for the Macro tab's 3x3 grid.
+# Plain close prices via yfinance (one batched call, same pattern as
+# iv_rank.compute_market_signals/_market_breadth above), not a technical
+# indicator -- the dashboard draws each as a simple Lightweight Charts line,
+# same style as the interest-rate charts above, rather than the fuller
+# TradingView candlestick embed the QQQ chart uses.
+#
+# Hourly, not daily, per an explicit "make it more granular" ask -- so the
+# tab's 1D/1W/1M range buttons actually show intraday-ish detail instead of
+# 1-2 daily points. Yahoo's free intraday feed allows 60m bars up to ~730
+# days back; SECTOR_HISTORY_PERIOD only asks for 1y (~1750 bars/ticker,
+# confirmed live), since that already covers the longest range button (1Y)
+# exactly and roughly halves the fetch/payload size versus asking for the
+# full 2y window this project uses for daily series elsewhere.
+SECTOR_ETFS = [
+    ("SPY", "Overall"),
+    ("QQQ", "Tech"),
+    ("SOXX", "Semiconductor"),
+    ("IGV", "Software"),
+    ("CIBR", "Cybersecurity"),
+    ("XBI", "Biotech"),
+    ("XLE", "Traditional Energy"),
+    ("XLB", "Raw Material"),
+    ("XLF", "Finance"),
+]
+SECTOR_HISTORY_PERIOD = "1y"
+SECTOR_HISTORY_INTERVAL = "60m"
+
+# A second, finer-grained fetch for the "1D" range button specifically --
+# per an explicit follow-up ("one data point every minute... only when the
+# range is <= 1 day"). Yahoo's free intraday feed caps 1-minute bars at 7
+# calendar days back (confirmed live: period any longer than this either
+# errors or silently truncates), which comfortably covers "the last trading
+# day" with room for weekends/holidays in between -- SECTOR_MINUTE_BARS_PER_DAY
+# then trims that down to one regular NYSE session's worth (9:30-16:00 ET =
+# 390 minutes) when the "1D" button is actually clicked.
+SECTOR_MINUTE_HISTORY_PERIOD = "7d"
+SECTOR_MINUTE_HISTORY_INTERVAL = "1m"
+
 # Bump whenever compute_macro_signals()'s return shape changes -- same
 # stale-cache guard as iv_rank.SCHEMA_VERSION, see that constant's note.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 11
 
 
 def _directional_movement(high: pd.Series, low: pd.Series, close: pd.Series,
@@ -449,6 +488,67 @@ def _extract_close(data: pd.DataFrame, symbol: str, single: bool) -> pd.Series |
         return None
 
 
+def _fetch_sector_closes(period: str, interval: str) -> dict[str, pd.Series]:
+    """{ticker: close_series} for SECTOR_ETFS at the given period/interval --
+    one batched `yf.download` call (same pattern as `_market_breadth`
+    above). A ticker with no usable data at this period/interval is simply
+    omitted, not an error."""
+    import yfinance as yf
+
+    tickers = [t for t, _ in SECTOR_ETFS]
+    try:
+        data = yf.download(tickers=tickers, period=period, interval=interval,
+                           group_by="ticker", auto_adjust=True, progress=False, threads=False)
+    except Exception:
+        data = None
+    if data is None or data.empty:
+        return {}
+    single = len(tickers) == 1
+    out: dict[str, pd.Series] = {}
+    for ticker, _ in SECTOR_ETFS:
+        close = _extract_close(data, ticker, single)
+        if close is not None and not close.empty:
+            out[ticker] = close
+    return out
+
+
+def _to_history(close: pd.Series) -> list[dict]:
+    """A Close Series -> [{"time": <unix seconds>, "value": ...}, ...] --
+    Lightweight Charts' own {time, value} shape directly, no client-side
+    remapping needed. `time` is a Unix timestamp, not a 'YYYY-MM-DD' string
+    like every other history in this module, since these bars (hourly or
+    minute) need sub-day precision that BusinessDay strings can't express."""
+    return [{"time": int(d.timestamp()), "value": float(v)} for d, v in close.items()]
+
+
+def _sector_price_histories() -> list[dict]:
+    """[{"ticker", "label", "history": [...hourly, 1y...], "history_1m":
+    [...minute, ~7d, only when available...], "latest"}, ...] for
+    SECTOR_ETFS, in that fixed order (see this module's SECTOR_ETFS comment
+    for why hourly by default, and SECTOR_MINUTE_HISTORY_PERIOD's comment
+    for the minute-level "1D" data). Two batched `yf.download` calls (one
+    per granularity), not a technical indicator. A ticker missing from the
+    hourly fetch is omitted entirely; missing only from the minute fetch
+    just means that ticker's `history_1m` key is absent (the "1D" button
+    falls back to hourly data for it client-side rather than showing
+    nothing)."""
+    hourly = _fetch_sector_closes(SECTOR_HISTORY_PERIOD, SECTOR_HISTORY_INTERVAL)
+    minute = _fetch_sector_closes(SECTOR_MINUTE_HISTORY_PERIOD, SECTOR_MINUTE_HISTORY_INTERVAL)
+
+    out = []
+    for ticker, label in SECTOR_ETFS:
+        close = hourly.get(ticker)
+        if close is None or close.empty:
+            continue
+        entry = {"ticker": ticker, "label": label, "history": _to_history(close),
+                  "latest": float(close.iloc[-1])}
+        minute_close = minute.get(ticker)
+        if minute_close is not None and not minute_close.empty:
+            entry["history_1m"] = _to_history(minute_close)
+        out.append(entry)
+    return out
+
+
 def _market_breadth(tickers: list[str], window: int = BREADTH_SMA_WINDOW,
                     chunk_size: int = BREADTH_CHUNK_SIZE,
                     chunk_gap: float = BREADTH_CHUNK_GAP) -> tuple[float | None, int]:
@@ -666,6 +766,13 @@ def compute_macro_signals() -> dict:
             out["fed_funds_history"] = fed_funds_history
         if fed_funds_latest is not None:
             out["fed_funds_latest"] = fed_funds_latest
+    except Exception:
+        pass
+
+    try:
+        sector_charts = _sector_price_histories()
+        if sector_charts:
+            out["sector_charts"] = sector_charts
     except Exception:
         pass
 

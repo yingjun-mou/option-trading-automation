@@ -182,6 +182,23 @@
     margin-bottom: 4px; }
   .reco-item .v { font-size: 14px; font-weight: 600; }
   .reco-note { color: var(--muted); font-size: 11px; margin-top: 10px; }
+
+  .sector-panel { margin-top: 16px; }
+  .sector-range-buttons { display: flex; gap: 6px; margin-top: 10px; }
+  .range-btn { background: none; border: 1px solid var(--line); color: var(--muted); font: inherit;
+    font-size: 12px; padding: 5px 12px; border-radius: 6px; cursor: pointer; }
+  .range-btn:hover { color: var(--text); }
+  .range-btn.active { border-color: var(--accent); color: var(--accent); }
+  .sector-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 10px; }
+  @media (max-width: 720px) { .sector-grid { grid-template-columns: 1fr; } }
+  @media (min-width: 721px) and (max-width: 1080px) { .sector-grid { grid-template-columns: repeat(2, 1fr); } }
+  .sector-cell { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+  .sector-cell-label { font-size: 11px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: .04em; margin-bottom: 6px; }
+  .sector-cell-label b { color: var(--text); }
+  .sector-cell-value { float: right; color: var(--text); font-weight: 600; text-transform: none;
+    letter-spacing: normal; }
+  .sector-chart-container { height: 220px; }
 </style>
 </head>
 <body>
@@ -397,6 +414,26 @@
     <section class="panel reco-panel">
       <h2>Recommendations</h2>
       <div class="reco-current" id="recoCurrent">loading ...</div>
+    </section>
+
+    <section class="panel sector-panel">
+      <h2>Sector charts</h2>
+      <div class="sector-range-buttons" id="sectorRangeButtons">
+        <button class="range-btn" data-range="1D">1D</button>
+        <button class="range-btn" data-range="1W">1W</button>
+        <button class="range-btn" data-range="1M">1M</button>
+        <button class="range-btn" data-range="1Y">1Y</button>
+      </div>
+      <div class="sector-grid" id="sectorGrid"></div>
+      <div class="chart-note">Hourly close prices over the trailing year for 1W/1M/1Y, and
+        <b>minute</b> closes over the trailing ~week for <b>1D</b> (Yahoo's free feed caps 1-minute
+        history at 7 days back, so that granularity can't reach further than 1D anyway) -- fetched
+        from Yahoo Finance (two batched calls, one per granularity, for all 9 tickers) and drawn as
+        simple lines with Lightweight Charts, same minimal style as the interest-rate charts above,
+        not the fuller TradingView candlestick embed the QQQ chart at the top of this tab uses.
+        Scroll/pinch to zoom, drag to pan, hover for the crosshair's exact time/price on any chart
+        -- or use the 1D/1W/1M/1Y buttons above to align every chart to the same window (and, for
+        1D, granularity) at once. Not computed: just the fetched closes, connected.</div>
     </section>
 
     <footer>
@@ -913,21 +950,70 @@ let pendingFedFundsData = null;   // [{time, value}, ...] that arrived before th
 
 /** Shared Lightweight Charts options for every chart on this tab (dark
  * theme matched to the app's own palette, zoom/pan/crosshair all on by
- * default -- see this section's top comment). */
-function createLwcChart(containerId) {
+ * default -- see this section's top comment). `hourly` (true only for the
+ * sector grid's UTCTimestamp series) turns on timeVisible for hour:minute
+ * crosshair/axis labels -- confirmed live this must NOT be set for the
+ * Treasury/Fed-funds charts' daily BusinessDay-string data: it crashed the
+ * crosshair ("Cannot read properties of undefined (reading 'year')") on
+ * hover there, since timeVisible's hour:minute formatting assumes
+ * timestamp data, not a plain 'YYYY-MM-DD' business day. */
+function createLwcChart(containerId, hourly = false) {
   return LightweightCharts.createChart(document.getElementById(containerId), {
     layout: { background: { color: "transparent" }, textColor: "#9aa4b2" },
     grid: { vertLines: { color: "#262b36" }, horzLines: { color: "#262b36" } },
     rightPriceScale: { borderColor: "#262b36" },
-    timeScale: { borderColor: "#262b36" },
+    timeScale: hourly
+      ? { borderColor: "#262b36", timeVisible: true, secondsVisible: false }
+      : { borderColor: "#262b36" },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },   // free-floating crosshair + axis labels, not snap-to-point
     autoSize: true,
   });
 }
 
+// 3x3 sector-ETF grid, below the Recommendations panel. Originally 9
+// TradingView candlestick embeds (like the QQQ chart) -- simplified to
+// plain Lightweight Charts line series instead, same minimal style as the
+// interest-rate charts above, per an explicit "too complicated, simplify
+// to line charts" ask. ids here must match the `ticker` values
+// src/macro.py's SECTOR_ETFS returns under `sector_charts`.
+const SECTOR_CHARTS = [
+  { id: "spy",  label: "Overall",             ticker: "SPY" },
+  { id: "qqq",  label: "Tech",                ticker: "QQQ" },
+  { id: "soxx", label: "Semiconductor",       ticker: "SOXX" },
+  { id: "igv",  label: "Software",            ticker: "IGV" },
+  { id: "cibr", label: "Cybersecurity",       ticker: "CIBR" },
+  { id: "xbi",  label: "Biotech",             ticker: "XBI" },
+  { id: "xle",  label: "Traditional Energy",  ticker: "XLE" },
+  { id: "xlb",  label: "Raw Material",        ticker: "XLB" },
+  { id: "xlf",  label: "Finance",             ticker: "XLF" },
+];
+let sectorCharts = {};    // id -> Lightweight Charts chart instance
+let sectorSeries = {};    // id -> its one line series
+let sectorHourlyData = {};   // id -> [{time, value}, ...] over the trailing year, hourly bars
+let sectorMinuteData = {};   // id -> [{time, value}, ...] over the trailing ~7d, minute bars (may be absent)
+let sectorDataLength = {};   // id -> point count of whichever dataset is CURRENTLY shown
+let currentSectorRange = null;    // "1D"/"1W"/"1M"/"1Y", or null for the default (hourly, full fit)
+let sectorInitialFitDone = false; // true once the very first data load has set an initial view
+let pendingSectorDraw = false;    // true if data arrived before the chart lib finished loading
+
+/** Builds the 9 empty chart-cell containers the sector grid's line charts
+ * mount into -- called before the chart lib loads so each container exists
+ * by the time lw.onload creates its chart. */
+function initSectorGrid() {
+  document.getElementById("sectorGrid").innerHTML = SECTOR_CHARTS.map(c => `
+    <div class="sector-cell">
+      <div class="sector-cell-label">${c.label} &middot;
+        <a class="sym-link" href="https://finance.yahoo.com/quote/${encodeURIComponent(c.ticker)}/chart/"
+          target="_blank" rel="noopener noreferrer"><b>${c.ticker}</b></a>
+        <span class="sector-cell-value" id="sectorValue-${c.id}"></span></div>
+      <div class="sector-chart-container"><div id="sectorChart-${c.id}" style="width:100%;height:100%"></div></div>
+    </div>`).join("");
+}
+
 function initMacroChart() {
   if (macroChartInited) return;
   macroChartInited = true;
+  initSectorGrid();
 
   const tv = document.createElement("script");
   tv.src = "https://s3.tradingview.com/tv.js";
@@ -969,11 +1055,34 @@ function initMacroChart() {
     });
     if (pendingTreasuryData) { setTreasuryData(pendingTreasuryData); pendingTreasuryData = null; }
 
+    // AreaSeries, not LineSeries -- a gradient fill down to the bottom of
+    // the pane. The Fed funds rate is a policy rate, not a market price --
+    // it sits flat for long stretches between FOMC moves, so a
+    // day-over-day green/red read (meaningful for the sector charts below)
+    // isn't a useful signal here; fixed neutral blue instead, same accent
+    // color used elsewhere on this tab. The Treasury chart above keeps
+    // plain LineSeries with its own fixed amber/blue -- overlaying two
+    // semi-transparent gradient fills on the same pane would muddy the
+    // crossover reading that chart exists for.
     fedFundsChart = createLwcChart("fedFundsChart");
-    fedFundsSeries = fedFundsChart.addSeries(LightweightCharts.LineSeries, {
-      color: "#58a6ff", lineWidth: 2, priceFormat: pctFormat,
+    fedFundsSeries = fedFundsChart.addSeries(LightweightCharts.AreaSeries, {
+      lineColor: "#58a6ff", topColor: "rgba(88,166,255,0.30)", bottomColor: "rgba(88,166,255,0.02)",
+      lineWidth: 2, priceFormat: pctFormat,
     });
     if (pendingFedFundsData) { setFedFundsData(pendingFedFundsData); pendingFedFundsData = null; }
+
+    SECTOR_CHARTS.forEach(c => {
+      sectorCharts[c.id] = createLwcChart("sectorChart-" + c.id, /* hourly */ true);
+      sectorSeries[c.id] = sectorCharts[c.id].addSeries(LightweightCharts.AreaSeries, {
+        lineWidth: 1.5,
+        priceFormat: { type: "custom", formatter: v => "$" + v.toFixed(2), minMove: 0.01 },
+      });
+    });
+    if (pendingSectorDraw) {
+      refreshSectorSeries(/* forceViewReset */ true);
+      sectorInitialFitDone = true;
+      pendingSectorDraw = false;
+    }
   };
   document.body.appendChild(lw);
 }
@@ -992,7 +1101,23 @@ function setTreasuryData(data) {
   }
 }
 
-/** Same pattern as setTreasuryData, for the single-series Fed funds chart. */
+// AreaSeries color pair (line + a top->bottom fading gradient fill) for the
+// Fed funds and sector-grid charts, picked by each series' own latest
+// day-over-day change -- >= previous close counts as "up" (matches the
+// same convention the AAL Wheel tab's own price-change color already
+// uses). Fixed, semi-transparent alphas (not TradingView's own bolder
+// example) for a subtle glow rather than a solid block under the line.
+const TREND_UP = { line: "#3fb950", top: "rgba(63,185,80,0.30)", bottom: "rgba(63,185,80,0.02)" };
+const TREND_DOWN = { line: "#f85149", top: "rgba(248,81,73,0.30)", bottom: "rgba(248,81,73,0.02)" };
+function trendColors(data) {
+  if (!data || data.length < 2) return TREND_UP;
+  const last = data[data.length - 1].value, prev = data[data.length - 2].value;
+  return last >= prev ? TREND_UP : TREND_DOWN;
+}
+
+/** Same pattern as setTreasuryData, for the single-series Fed funds chart
+ * -- fixed neutral blue (see this series' creation comment for why it
+ * doesn't get the sector charts' day-over-day green/red treatment). */
 function setFedFundsData(data) {
   fedFundsSeries.setData(data);
   if (!fedFundsChartFitted) {
@@ -1000,6 +1125,78 @@ function setFedFundsData(data) {
     fedFundsChartFitted = true;
   }
 }
+
+// 1D/1W/1M/1Y buttons above the sector grid. 1D switches every chart to
+// MINUTE-granularity data (per an explicit "1 data point every minute,
+// only when the range is <= 1 day" ask); 1W/1M/1Y stay on the HOURLY
+// dataset (see src/macro.py's SECTOR_MINUTE_HISTORY_PERIOD for why minute
+// data only covers a short trailing window -- Yahoo's free feed caps
+// 1-minute bars at 7 days back, nowhere near enough for a 1W/1M/1Y view).
+// Visible windows are LOGICAL ranges (bar count, not calendar dates --
+// simpler than per-ticker calendar cutoffs, unaffected by any one
+// ticker's occasional missing bar). Bar counts: ~7 hourly bars/trading
+// day for 1W/1M; a regular NYSE session is 390 one-minute bars for 1D.
+// 1Y has no fixed count -- the backend already fetches exactly 1 year of
+// hourly bars, so "1Y" is just "show everything", i.e. fitContent().
+const SECTOR_BARS_PER_TRADING_DAY = 7;         // hourly bars/day, for 1W/1M
+const SECTOR_MINUTE_BARS_PER_DAY = 390;        // 9:30-16:00 ET regular session, for 1D
+const SECTOR_RANGE_BARS = {
+  "1W": SECTOR_BARS_PER_TRADING_DAY * 5,
+  "1M": SECTOR_BARS_PER_TRADING_DAY * 21,
+};
+
+/** The dataset that should be showing for `id` under `rangeKey` -- minute
+ * data for "1D" (falling back to hourly if this ticker's minute fetch
+ * came up empty, rather than showing nothing), hourly for everything
+ * else. */
+function sectorDataFor(id, rangeKey) {
+  if (rangeKey === "1D") return sectorMinuteData[id] || sectorHourlyData[id];
+  return sectorHourlyData[id];
+}
+
+/** Pushes whichever dataset `currentSectorRange` calls for into every
+ * sector chart's series (recoloring each by its own latest day-over-day
+ * change) -- called both on every data refresh and right after a button
+ * click. `forceViewReset` explicitly re-fits/re-trims the visible window;
+ * without it, this only updates the data in place, preserving whatever
+ * pan/zoom the viewer currently has (same principle as setTreasuryData/
+ * setFedFundsData) -- important because a passive 60s background refresh
+ * must NOT yank the view out from under someone who's clicked 1D or
+ * manually zoomed, but switching *which dataset* is active (minute vs
+ * hourly) always needs an explicit reset, since logical bar indices from
+ * one dataset are meaningless against the other. */
+function refreshSectorSeries(forceViewReset) {
+  SECTOR_CHARTS.forEach(c => {
+    const chart = sectorCharts[c.id], series = sectorSeries[c.id];
+    const data = sectorDataFor(c.id, currentSectorRange);
+    if (!chart || !series || !data?.length) return;
+    const colors = trendColors(data);
+    series.applyOptions({ lineColor: colors.line, topColor: colors.top, bottomColor: colors.bottom });
+    series.setData(data);
+    sectorDataLength[c.id] = data.length;
+    if (!forceViewReset) return;
+    if (currentSectorRange === "1D") {
+      chart.timeScale().setVisibleLogicalRange(
+        { from: Math.max(0, data.length - SECTOR_MINUTE_BARS_PER_DAY), to: data.length - 1 });
+    } else if (currentSectorRange === "1W" || currentSectorRange === "1M") {
+      const bars = SECTOR_RANGE_BARS[currentSectorRange];
+      chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, data.length - bars), to: data.length - 1 });
+    } else {
+      chart.timeScale().fitContent();   // "1Y", or the default (null) view
+    }
+  });
+}
+
+function applySectorRange(rangeKey) {
+  currentSectorRange = rangeKey;
+  refreshSectorSeries(/* forceViewReset */ true);
+  document.querySelectorAll("#sectorRangeButtons .range-btn").forEach(
+    b => b.classList.toggle("active", b.dataset.range === rangeKey));
+}
+document.getElementById("sectorRangeButtons").addEventListener("click", e => {
+  const btn = e.target.closest(".range-btn");
+  if (btn) applySectorRange(btn.dataset.range);
+});
 
 /** Green above `boundary`, red below, amber exactly at it (the "QQQ return",
  * "Price/200DMA", "50DMA/200DMA" rows all use this, with boundary 0 or 1). */
@@ -1193,6 +1390,35 @@ function drawFedFundsChart(s) {
   }
 }
 
+/** Feeds all 9 sector charts from `s.sector_charts` ([{ticker, label,
+ * history, history_1m, latest}, ...] as returned by /api/macro) -- same
+ * pattern as drawTreasuryChart/drawFedFundsChart, fanned out by ticker.
+ * `history` (hourly, ~1y) and `history_1m` (minute, ~7d, absent for a
+ * ticker if that fetch came up empty) are both already in Lightweight
+ * Charts' own {time: <unix seconds>, value} shape, so no field rename
+ * needed here, just stashed for refreshSectorSeries() to pick from
+ * depending on the currently-selected range. A ticker missing entirely
+ * from the response (e.g. a transient yfinance miss) just leaves that one
+ * chart on its last-known data rather than clearing it. */
+function drawSectorCharts(s) {
+  const list = s.sector_charts;
+  if (!list?.length) return;
+  list.forEach(item => {
+    const cfg = SECTOR_CHARTS.find(c => c.ticker === item.ticker);
+    if (!cfg || !item.history?.length) return;
+    sectorHourlyData[cfg.id] = item.history;
+    if (item.history_1m?.length) sectorMinuteData[cfg.id] = item.history_1m;
+    const valEl = document.getElementById("sectorValue-" + cfg.id);
+    if (valEl) valEl.textContent = "$" + item.latest.toFixed(2);
+  });
+  if (Object.keys(sectorSeries).length) {
+    refreshSectorSeries(/* forceViewReset */ !sectorInitialFitDone);
+    sectorInitialFitDone = true;
+  } else {
+    pendingSectorDraw = true;
+  }
+}
+
 /** Updates the "Strong Bull/Bull/Sideways/Bear/Strong Bear" badge above the
  * snapshot table from the slow score + market_regime the API returns. */
 function updateRegimeBadge(s) {
@@ -1281,6 +1507,7 @@ async function refreshMacro() {
   renderRegimeMatrix(s.market_regime);
   drawTreasuryChart(s);
   drawFedFundsChart(s);
+  drawSectorCharts(s);
   document.getElementById("macroAsOf").textContent =
     d.as_of ? "as of " + new Date(d.as_of).toLocaleString() : "not computed yet -- check back shortly";
 }
