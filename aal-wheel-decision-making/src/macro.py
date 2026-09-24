@@ -50,11 +50,25 @@ from __future__ import annotations
 import io
 import json
 import time
+import traceback
 
 import numpy as np
 import pandas as pd
 
 from .realtime import REALTIME_DIR
+
+
+def _log_error(context: str, exc: Exception) -> None:
+    """Prints a traceback for an otherwise-silently-swallowed failure inside
+    compute_macro_signals(). MacroJob runs each cycle in a background thread
+    with no caller to propagate exceptions to, and this module deliberately
+    catches per-section so one bad fetch doesn't blank the whole Macro tab --
+    but that used to mean total silence on both success and failure. print()
+    goes to stdout, which Render (and any other host running this under
+    gunicorn) captures as service logs, matching this project's existing
+    print()-for-diagnostics convention (see dashboard/app.py)."""
+    print(f"[macro] {context} failed: {exc!r}")
+    traceback.print_exc()
 
 QQQ_SYMBOL = "QQQ"
 VIX_SYMBOL = "^VIX"
@@ -432,7 +446,8 @@ def _last_close(symbol: str) -> float | None:
         hist = yf.Ticker(symbol).history(period="5d", interval="1d")
         closes = hist["Close"].dropna()
         return float(closes.iloc[-1]) if not closes.empty else None
-    except Exception:
+    except Exception as exc:
+        _log_error(f"last close ({symbol})", exc)
         return None
 
 
@@ -471,7 +486,8 @@ def _load_nasdaq100_tickers() -> list[str]:
         NASDAQ100_CACHE_FILE.write_text(json.dumps(
             {"fetched_at": pd.Timestamp.now("UTC").isoformat(timespec="seconds"), "tickers": tickers}))
         return tickers
-    except Exception:
+    except Exception as exc:
+        _log_error("Nasdaq-100 constituents (Wikipedia)", exc)
         return cached_tickers or []
 
 
@@ -499,7 +515,8 @@ def _fetch_sector_closes(period: str, interval: str) -> dict[str, pd.Series]:
     try:
         data = yf.download(tickers=tickers, period=period, interval=interval,
                            group_by="ticker", auto_adjust=True, progress=False, threads=False)
-    except Exception:
+    except Exception as exc:
+        _log_error(f"sector closes fetch ({period}/{interval})", exc)
         data = None
     if data is None or data.empty:
         return {}
@@ -609,7 +626,8 @@ def _fetch_fred_series(series_id: str) -> pd.Series | None:
         df = df.dropna(subset=["value"])
         df["date"] = pd.to_datetime(df["date"])
         return df.set_index("date")["value"]
-    except Exception:
+    except Exception as exc:
+        _log_error(f"FRED series {series_id}", exc)
         return None
 
 
@@ -715,8 +733,8 @@ def compute_macro_signals() -> dict:
             out["regime_history"] = _regime_history(
                 close, sma20_series, sma50_series, sma200_series,
                 adx_series, plus_di_series, minus_di_series)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log_error("QQQ/ADX/slow-score/reversal/regime", exc)
 
     vix = _last_close(VIX_SYMBOL)
     vix3m = _last_close(VIX3M_SYMBOL)
@@ -733,8 +751,8 @@ def compute_macro_signals() -> dict:
         if breadth is not None:
             out["nasdaq100_breadth"] = breadth
             out["nasdaq100_breadth_n"] = breadth_n
-    except Exception:
-        pass
+    except Exception as exc:
+        _log_error("Nasdaq-100 breadth", exc)
 
     try:
         real_yield_history, real_yield_latest = _fred_yield_history(REAL_YIELD_SERIES_ID)
@@ -742,7 +760,8 @@ def compute_macro_signals() -> dict:
             out["real_yield_history"] = real_yield_history
         if real_yield_latest is not None:
             out["real_yield_latest"] = real_yield_latest
-    except Exception:
+    except Exception as exc:
+        _log_error("real yield (FRED DFII10)", exc)
         real_yield_latest = None
 
     try:
@@ -751,7 +770,8 @@ def compute_macro_signals() -> dict:
             out["nominal_yield_history"] = nominal_yield_history
         if nominal_yield_latest is not None:
             out["nominal_yield_latest"] = nominal_yield_latest
-    except Exception:
+    except Exception as exc:
+        _log_error("nominal yield (FRED DGS10)", exc)
         nominal_yield_latest = None
 
     # Breakeven inflation = nominal - real -- the bond market's own implied
@@ -766,14 +786,14 @@ def compute_macro_signals() -> dict:
             out["fed_funds_history"] = fed_funds_history
         if fed_funds_latest is not None:
             out["fed_funds_latest"] = fed_funds_latest
-    except Exception:
-        pass
+    except Exception as exc:
+        _log_error("fed funds rate (FRED DFF)", exc)
 
     try:
         sector_charts = _sector_price_histories()
         if sector_charts:
             out["sector_charts"] = sector_charts
-    except Exception:
-        pass
+    except Exception as exc:
+        _log_error("sector charts", exc)
 
     return out
