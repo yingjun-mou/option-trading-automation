@@ -1,7 +1,10 @@
-"""Flask app for the advisor dashboard: two tabs, two JSON APIs. AAL Wheel
-(`/api/advice`, `/api/history`) polls a live quote through the same rules as
-the research backtest. Premium Scanner (`/api/scan`, `/api/scan/refresh`)
-serves the background ScannerJob's cached cross-sectional scan."""
+"""Flask app for the advisor dashboard: four tabs, each backed by its own
+JSON API(s). AAL Wheel (`/api/advice`, `/api/history`) polls a live quote
+through the same rules as the research backtest. Premium Scanner (`/api/scan`,
+`/api/scan/refresh`) serves the background ScannerJob's cached cross-sectional
+scan. Macro (`/api/macro`) serves MacroJob's cached QQQ/VIX/breadth snapshot.
+Watchlist (`/api/watchlist`) merges the static realtime_data/watchlist.csv
+rows with WatchlistJob's cached price/return signals."""
 
 from __future__ import annotations
 
@@ -24,6 +27,8 @@ from src.iv_rank_job import IvRankJob  # noqa: E402
 from src.macro_job import MacroJob  # noqa: E402
 from src.realtime import MOCK_DIR, default_realtime_source  # noqa: E402
 from src.scanner_job import ScannerJob  # noqa: E402
+from src.watchlist import load_watchlist_rows  # noqa: E402
+from src.watchlist_job import WatchlistJob  # noqa: E402
 from src.wheel import WheelConfig  # noqa: E402
 
 OPTIMIZED_CONFIG = ROOT / "results" / "optimized_config.json"
@@ -104,6 +109,8 @@ SCANNER = ScannerJob(iv_rank_provider=lambda: IV_RANK.signals)
 SCANNER.start()
 MACRO = MacroJob()
 MACRO.start()
+WATCHLIST = WatchlistJob()
+WATCHLIST.start()
 
 # The AAL Wheel tab's context (historical features + live-quote source) is
 # built lazily, on first use, NOT at import time like the two jobs above.
@@ -148,7 +155,7 @@ def _current_advice():
 
 @app.route("/")
 def index():
-    """The single-page dashboard (both tabs; JS fetches the APIs below).
+    """The single-page dashboard (all tabs; JS fetches the live-data APIs below).
     Doesn't force the AAL context to build -- shows a placeholder label
     until whichever request gets there first (see _get_aal_context)."""
     label = _aal_context[2].label if _aal_context is not None else "loading..."
@@ -187,6 +194,15 @@ def api_scan_refresh():
 def api_macro():
     """Polled every 60s by the Macro tab -- MacroJob's cached QQQ/VIX snapshot."""
     return jsonify(as_of=MACRO.as_of, signals=MACRO.signals)
+
+
+@app.route("/api/watchlist")
+def api_watchlist():
+    """Polled every 60s by the Watchlist tab -- the static category/note/ticker
+    rows (re-read from disk each call; it's a small file edited by hand, not
+    worth caching) merged with WatchlistJob's cached price/return signals."""
+    rows = [{**r, **WATCHLIST.signals.get(r["yahoo_symbol"], {})} for r in load_watchlist_rows()]
+    return jsonify(as_of=WATCHLIST.as_of, rows=rows)
 
 
 if __name__ == "__main__":

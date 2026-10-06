@@ -199,6 +199,36 @@
   .sector-cell-value { float: right; color: var(--text); font-weight: 600; text-transform: none;
     letter-spacing: normal; }
   .sector-chart-container { height: 220px; }
+
+  .wl-search { background: var(--bg); border: 1px solid var(--line); color: var(--text);
+    font: inherit; font-size: 13px; padding: 6px 10px; border-radius: 6px; width: 260px; }
+  .wl-search:focus { outline: none; border-color: var(--accent); }
+  table.watchlist { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.watchlist th { text-align: right; color: var(--muted); font-weight: 600; font-size: 11px;
+    text-transform: uppercase; letter-spacing: .04em; padding: 6px 10px; border-bottom: 1px solid var(--line);
+    white-space: nowrap; }
+  table.watchlist th:first-child, table.watchlist th:nth-child(2) { text-align: left; }
+  table.watchlist td { text-align: right; padding: 6px 10px; border-bottom: 1px dotted var(--line);
+    white-space: nowrap; }
+  table.watchlist td:first-child { text-align: left; }
+  table.watchlist td:nth-child(2) { text-align: left; color: var(--muted); white-space: normal; }
+  table.watchlist tbody tr:not(.wl-section):hover { background: rgba(255,255,255,.03); }
+  table.watchlist tr.wl-section td { color: var(--accent); font-size: 11px; text-transform: uppercase;
+    letter-spacing: .04em; padding: 10px 10px 5px; border-bottom: 1px solid var(--line); }
+  table.watchlist tr.wl-section:first-child td { padding-top: 4px; }
+  .wl-section-count { color: var(--muted); text-transform: none; letter-spacing: normal; font-weight: 400;
+    margin-left: 6px; }
+  table.watchlist tr.wl-hidden, table.watchlist tr.wl-folded { display: none; }
+  .wl-empty { color: var(--muted); margin-top: 16px; }
+  table.watchlist th.sortable { cursor: pointer; user-select: none; }
+  table.watchlist th.sortable:hover { color: var(--text); }
+  table.watchlist th.sorted { color: var(--accent); }
+  table.watchlist tr.wl-section { cursor: pointer; user-select: none; }
+  table.watchlist tr.wl-section:hover td { color: var(--text); }
+  .wl-caret { display: inline-block; width: 16px; color: var(--muted); font-size: 12px; }
+  table.watchlist a.wl-link { display: block; color: var(--text); text-decoration: none; font-weight: 600; }
+  table.watchlist a.wl-link:hover { color: var(--accent); text-decoration: underline; }
+  table.watchlist a.wl-link::after { content: " \2197"; color: var(--muted); font-weight: 400; font-size: 11px; }
 </style>
 </head>
 <body>
@@ -210,6 +240,7 @@
 <nav class="tabs">
   <button class="tab active" data-tab="macro">Macro</button>
   <button class="tab" data-tab="scanner">Premium Scanner</button>
+  <button class="tab" data-tab="watchlist">Watchlist</button>
   <button class="tab" data-tab="wheel">AAL Wheel</button>
 </nav>
 
@@ -320,6 +351,41 @@
           "min open interest" checks <code>max(open interest, today's volume)</code>.</li>
         <li>Live Yahoo Finance quotes, ~15-20min delayed. Universe: S&amp;P 500 + top 500
           Nasdaq-listed by market cap. Suggestions only &mdash; not investment advice.</li>
+      </ul>
+    </footer>
+  </div>
+</div>
+
+<div id="tab-watchlist" class="tabpanel" hidden>
+  <div class="scan-wrap">
+    <div class="scan-head">
+      <h1>Watchlist</h1>
+      <span class="scan-status" id="wlStatus">loading ...</span>
+      <div class="spacer"></div>
+      <input type="text" id="wlSearch" class="wl-search"
+        placeholder="Filter by ticker, note, or category&hellip;">
+    </div>
+
+    <div style="overflow-x:auto">
+      <table class="watchlist">
+        <thead><tr id="wlHead"></tr></thead>
+        <tbody id="wlBody"><tr><td colspan="10" style="color:var(--muted)">loading ...</td></tr></tbody>
+      </table>
+    </div>
+    <p class="wl-empty" id="wlEmpty" hidden>No tickers match &ldquo;<span id="wlEmptyTerm"></span>&rdquo;.</p>
+
+    <footer>
+      <ul>
+        <li>Personal reference list (<code>realtime_data/watchlist.csv</code>, Category/Note/Stock),
+          grouped by category &mdash; not derived from any scan or research module. The file is
+          git-ignored: it never reaches the public repo. Edit it and reload this page to add or
+          remove tickers.</li>
+        <li>Price and every return column come from live Yahoo Finance daily closes
+          (~15-20min delayed), refreshed in the background every 15 minutes. <b>Today</b> = latest
+          close vs. the prior close; <b>1W/1M/3M/1Y/5Y</b> = trailing 5/21/63/252/1260 trading days;
+          <b>YTD</b> = vs. the first close of the current calendar year. A blank cell means not
+          enough history yet (common for recent IPOs) or Yahoo has no data under that ticker.
+          Click a ticker to open its chart. Suggestions only &mdash; not investment advice.</li>
       </ul>
     </footer>
   </div>
@@ -644,7 +710,7 @@ setInterval(refresh, 6000);
 setInterval(drawSpark, 60000);
 
 // -- tabs -------------------------------------------------------------
-const TAB_IDS = ["macro", "scanner", "wheel"];
+const TAB_IDS = ["macro", "scanner", "watchlist", "wheel"];
 document.querySelectorAll("nav.tabs button").forEach(btn => {
   btn.addEventListener("click", () => {
     document.querySelectorAll("nav.tabs button").forEach(b => b.classList.remove("active"));
@@ -652,8 +718,156 @@ document.querySelectorAll("nav.tabs button").forEach(btn => {
     TAB_IDS.forEach(id => { document.getElementById("tab-" + id).hidden = btn.dataset.tab !== id; });
     if (btn.dataset.tab === "scanner") refreshScan();
     if (btn.dataset.tab === "macro") initMacroChart();
+    if (btn.dataset.tab === "watchlist") refreshWatchlist();
   });
 });
+
+// -- watchlist -------------------------------------------------------------
+// /api/watchlist serves the static Category/Note/Stock rows (app.py's
+// load_watchlist_rows) merged with WatchlistJob's cached price/return
+// signals -- a plain polled snapshot, same shape as the scanner/macro tabs,
+// not something this page computes itself.
+// Sortable delta columns (Price and the ticker/note text stay unsortable on
+// purpose -- the ask was "sortable by the delta percentages"). Sorting only ever
+// reorders rows *inside* their own category; categories stay in file order.
+const WL_DELTA_COLS = [
+  { key: "chg_1d", label: "Today" }, { key: "chg_1w", label: "1W" },
+  { key: "chg_1m", label: "1M" }, { key: "chg_3m", label: "3M" },
+  { key: "chg_ytd", label: "YTD" }, { key: "chg_1y", label: "1Y" },
+  { key: "chg_5y", label: "5Y" },
+];
+
+// Sort/fold state lives here, not in the DOM, so the 60s refresh rebuilds the
+// table without undoing what the user has sorted or folded.
+const wlState = { rows: [], sortKey: null, sortDir: null, folded: new Set() };
+
+function wlChgCell(x) {
+  if (x === null || x === undefined || Number.isNaN(x)) return `<td>-</td>`;
+  const cls = x > 0 ? "up" : (x < 0 ? "down" : "");
+  return `<td class="${cls}">${x >= 0 ? "+" : ""}${(100 * x).toFixed(1)}%</td>`;
+}
+
+// Nulls always sort last, regardless of direction -- a missing 5Y (recent IPO)
+// shouldn't jump to the top of a "highest first" sort.
+function wlCompare(a, b, dir) {
+  const na = a == null || Number.isNaN(a), nb = b == null || Number.isNaN(b);
+  if (na && nb) return 0;
+  if (na) return 1;
+  if (nb) return -1;
+  return dir === "asc" ? a - b : b - a;
+}
+
+function renderWatchlistHeader() {
+  const cells = [`<th>Ticker</th>`, `<th>Note</th>`, `<th>Price</th>`];
+  for (const c of WL_DELTA_COLS) {
+    const sorted = wlState.sortKey === c.key;
+    const arrow = sorted ? (wlState.sortDir === "asc" ? " ▲" : " ▼") : "";
+    cells.push(`<th class="sortable${sorted ? " sorted" : ""}" data-key="${c.key}">${c.label}${arrow}</th>`);
+  }
+  document.getElementById("wlHead").innerHTML = cells.join("");
+}
+
+function renderWatchlistTable() {
+  renderWatchlistHeader();
+  const body = document.getElementById("wlBody");
+  if (!wlState.rows.length) {
+    body.innerHTML = `<tr><td colspan="10" style="color:var(--muted)">` +
+      `No watchlist found. Add rows to realtime_data/watchlist.csv and reload.</td></tr>`;
+    return;
+  }
+  // Group consecutive rows by category (the CSV keeps each category contiguous).
+  const groups = [];
+  for (const r of wlState.rows) {
+    let g = groups[groups.length - 1];
+    if (!g || g.category !== r.category) { g = { category: r.category, rows: [] }; groups.push(g); }
+    g.rows.push(r);
+  }
+  let html = "";
+  for (const g of groups) {
+    if (wlState.sortKey) {
+      g.rows.sort((a, b) => wlCompare(a[wlState.sortKey], b[wlState.sortKey], wlState.sortDir));
+    }
+    const folded = wlState.folded.has(g.category);
+    html += `<tr class="wl-section" data-cat="${g.category}"><td colspan="10">` +
+      `<span class="wl-caret">${folded ? "▸" : "▾"}</span>${g.category}` +
+      `<span class="wl-section-count">${g.rows.length}</span></td></tr>`;
+    for (const r of g.rows) {
+      const search = `${r.category} ${r.note || ""} ${r.stock}`.toLowerCase();
+      const url = `https://finance.yahoo.com/quote/${encodeURIComponent(r.yahoo_symbol || r.stock)}/chart/`;
+      html += `<tr class="${folded ? "wl-folded" : ""}" data-search="${search}">` +
+        `<td><a class="wl-link" href="${url}" target="_blank" rel="noopener noreferrer" ` +
+        `title="Open ${r.stock} on Yahoo Finance">${r.stock}</a></td>` +
+        `<td>${r.note || "&mdash;"}</td>` +
+        `<td>${r.price != null ? "$" + F(r.price) : "-"}</td>` +
+        WL_DELTA_COLS.map(c => wlChgCell(r[c.key])).join("") +
+        `</tr>`;
+    }
+  }
+  body.innerHTML = html;
+  applyWatchlistFilter();
+}
+
+// Header click cycles: desc -> asc -> unsorted (for that column).
+document.getElementById("wlHead").addEventListener("click", e => {
+  const th = e.target.closest("th[data-key]");
+  if (!th) return;
+  const key = th.dataset.key;
+  if (wlState.sortKey !== key) { wlState.sortKey = key; wlState.sortDir = "desc"; }
+  else if (wlState.sortDir === "desc") { wlState.sortDir = "asc"; }
+  else { wlState.sortKey = null; wlState.sortDir = null; }
+  renderWatchlistTable();
+});
+
+// Category header click folds/unfolds that category's rows.
+document.getElementById("wlBody").addEventListener("click", e => {
+  const sec = e.target.closest("tr.wl-section");
+  if (!sec) return;
+  const cat = sec.dataset.cat;
+  if (wlState.folded.has(cat)) wlState.folded.delete(cat);
+  else wlState.folded.add(cat);
+  renderWatchlistTable();
+});
+
+function applyWatchlistFilter() {
+  const term = (document.getElementById("wlSearch").value || "").trim().toLowerCase();
+  const rows = Array.from(document.querySelectorAll("table.watchlist tbody tr[data-search]"));
+  let visible = 0;
+  rows.forEach(tr => {
+    const hit = !term || tr.dataset.search.includes(term);
+    tr.classList.toggle("wl-hidden", !hit);
+    if (hit) visible++;
+  });
+  // a section header stays visible only if at least one of its rows matched
+  document.querySelectorAll("table.watchlist tr.wl-section").forEach(sec => {
+    let sib = sec.nextElementSibling, anyVisible = false;
+    while (sib && !sib.classList.contains("wl-section")) {
+      if (!sib.classList.contains("wl-hidden")) anyVisible = true;
+      sib = sib.nextElementSibling;
+    }
+    sec.classList.toggle("wl-hidden", !anyVisible);
+  });
+  const empty = document.getElementById("wlEmpty");
+  document.getElementById("wlEmptyTerm").textContent = term;
+  empty.hidden = visible > 0;
+}
+
+async function refreshWatchlist() {
+  let data;
+  try {
+    data = await (await fetch("/api/watchlist", { cache: "no-store" })).json();
+  } catch (e) {
+    return;
+  }
+  const statusEl = document.getElementById("wlStatus");
+  const asOf = data.as_of ? new Date(data.as_of).toLocaleString() : "pending first refresh";
+  statusEl.textContent = `${data.rows.length} tickers · prices as of ${asOf}`;
+  // Full rebuild every call (rows are cheap: ~85). Sort/fold live in wlState and
+  // the search box is re-read, so none of those are reset by the poll.
+  wlState.rows = data.rows;
+  renderWatchlistTable();
+}
+document.getElementById("wlSearch").addEventListener("input", applyWatchlistFilter);
+setInterval(refreshWatchlist, 60000);
 
 // -- premium scanner ----------------------------------------------------
 // Drives both the header row (built once below) and click-to-sort; `key`
